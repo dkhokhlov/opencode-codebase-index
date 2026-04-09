@@ -4,7 +4,7 @@ import { performance } from "perf_hooks";
 import PQueue from "p-queue";
 import pRetry from "p-retry";
 
-import { ParsedCodebaseIndexConfig } from "../config/schema.js";
+import { ParsedCodebaseIndexConfig, type RerankerConfig } from "../config/schema.js";
 import { detectEmbeddingProvider, ConfiguredProviderInfo, tryDetectProvider, createCustomProviderInfo } from "../embeddings/detector.js";
 import {
   createEmbeddingProvider,
@@ -157,6 +157,11 @@ interface FailedBatch {
 }
 
 type RankedCandidate = { id: string; score: number; metadata: ChunkMetadata };
+
+interface RerankDocumentPayload {
+  id: string;
+  text: string;
+}
 
 interface HybridRankOptions {
   fusionStrategy: "weighted" | "rrf";
@@ -341,6 +346,20 @@ function splitNameTokens(name: string): Set<string> {
   );
   setBoundedCache(rankingNameTokenCache, lowered, tokens);
   return tokens;
+}
+
+function createRerankerDocumentText(candidate: RankedCandidate): string {
+  const parts = [
+    `path: ${candidate.metadata.filePath}`,
+    `chunk_type: ${candidate.metadata.chunkType}`,
+    `language: ${candidate.metadata.language}`,
+  ];
+
+  if (candidate.metadata.name) {
+    parts.push(`name: ${candidate.metadata.name}`);
+  }
+
+  return parts.join("\n");
 }
 
 function chunkTypeBoost(chunkType: string): number {
@@ -1448,6 +1467,114 @@ export class Indexer {
     }
   }
 
+  private async rerankCandidatesWithApi(
+    query: string,
+    candidates: RankedCandidate[]
+  ): Promise<RankedCandidate[]> {
+    const reranker = this.config.reranker;
+    if (!reranker || !reranker.enabled || candidates.length <= 1) {
+      return candidates;
+    }
+
+    const topN = Math.min(reranker.topN, candidates.length);
+    const head = candidates.slice(0, topN);
+    const tail = candidates.slice(topN);
+    const documents = head.map((candidate) => ({
+      id: candidate.id,
+      text: createRerankerDocumentText(candidate),
+    }));
+
+    try {
+      const rankedIds = await this.callExternalReranker(query, documents, reranker);
+      if (rankedIds.length === 0) {
+        return candidates;
+      }
+
+      const order = new Map(rankedIds.map((id, index) => [id, index]));
+      const rerankedHead = [...head].sort((a, b) => {
+        const aRank = order.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+        const bRank = order.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+        if (aRank !== bRank) {
+          return aRank - bRank;
+        }
+        if (b.score !== a.score) {
+          return b.score - a.score;
+        }
+        return a.id.localeCompare(b.id);
+      });
+
+      this.logger.search("debug", "Applied external reranker", {
+        provider: reranker.provider,
+        model: reranker.model,
+        candidateCount: head.length,
+      });
+
+      return [...rerankedHead, ...tail];
+    } catch (error) {
+      this.logger.search("warn", "External reranker failed; using deterministic order", {
+        provider: reranker.provider,
+        model: reranker.model,
+        error: getErrorMessage(error),
+      });
+      return candidates;
+    }
+  }
+
+  private async callExternalReranker(
+    query: string,
+    documents: RerankDocumentPayload[],
+    reranker: RerankerConfig
+  ): Promise<string[]> {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (reranker.apiKey) {
+      headers.Authorization = `Bearer ${reranker.apiKey}`;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), reranker.timeoutMs);
+    try {
+      const response = await fetch(`${reranker.baseUrl}/rerank`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: reranker.model,
+          query,
+          documents: documents.map((document) => document.text),
+          top_n: documents.length,
+          return_documents: false,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Reranker API error: ${response.status} - ${await response.text()}`);
+      }
+
+      const body = await response.json() as {
+        results?: Array<{ index?: number; relevance_score?: number }>;
+      };
+      if (!Array.isArray(body.results)) {
+        throw new Error("Reranker API returned unexpected response format.");
+      }
+
+      return body.results
+        .map((result) => {
+          const index = typeof result.index === "number" ? result.index : -1;
+          return documents[index]?.id;
+        })
+        .filter((id): id is string => typeof id === "string");
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`Reranker request timed out after ${reranker.timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async initialize(): Promise<void> {
     if (this.config.embeddingProvider === 'custom') {
       if (!this.config.customProvider) {
@@ -2477,11 +2604,12 @@ export class Indexer {
       hybridWeight,
       prioritizeSourcePaths: sourceIntent,
     });
+    const rerankedCombined = await this.rerankCandidatesWithApi(query, combined);
     const fusionMs = performance.now() - fusionStartTime;
 
     const rescued = promoteIdentifierMatches(
       query,
-      combined,
+      rerankedCombined,
       semanticCandidates,
       keywordCandidates,
       database,
