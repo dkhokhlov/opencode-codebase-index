@@ -348,20 +348,6 @@ function splitNameTokens(name: string): Set<string> {
   return tokens;
 }
 
-function createRerankerDocumentText(candidate: RankedCandidate): string {
-  const parts = [
-    `path: ${candidate.metadata.filePath}`,
-    `chunk_type: ${candidate.metadata.chunkType}`,
-    `language: ${candidate.metadata.language}`,
-  ];
-
-  if (candidate.metadata.name) {
-    parts.push(`name: ${candidate.metadata.name}`);
-  }
-
-  return parts.join("\n");
-}
-
 function chunkTypeBoost(chunkType: string): number {
   switch (chunkType) {
     case "function":
@@ -1479,10 +1465,12 @@ export class Indexer {
     const topN = Math.min(reranker.topN, candidates.length);
     const head = candidates.slice(0, topN);
     const tail = candidates.slice(topN);
-    const documents = head.map((candidate) => ({
-      id: candidate.id,
-      text: createRerankerDocumentText(candidate),
-    }));
+    const documents = await Promise.all(
+      head.map(async (candidate) => ({
+        id: candidate.id,
+        text: await this.createRerankerDocumentText(candidate),
+      }))
+    );
 
     try {
       const rankedIds = await this.callExternalReranker(query, documents, reranker);
@@ -1573,6 +1561,37 @@ export class Indexer {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private async createRerankerDocumentText(candidate: RankedCandidate): Promise<string> {
+    const parts = [
+      `path: ${candidate.metadata.filePath}`,
+      `chunk_type: ${candidate.metadata.chunkType}`,
+      `language: ${candidate.metadata.language}`,
+      `lines: ${candidate.metadata.startLine}-${candidate.metadata.endLine}`,
+    ];
+
+    if (candidate.metadata.name) {
+      parts.push(`name: ${candidate.metadata.name}`);
+    }
+
+    const intent = isLikelyImplementationPath(candidate.metadata.filePath) ? "implementation" : "doc_or_test";
+    parts.push(`intent_hint: ${intent}`);
+
+    try {
+      const fileContent = await fsPromises.readFile(candidate.metadata.filePath, "utf-8");
+      const lines = fileContent.split("\n");
+      const snippetStartLine = Math.max(1, candidate.metadata.startLine - 2);
+      const snippetEndLine = Math.min(lines.length, candidate.metadata.endLine + 2);
+      const snippet = lines.slice(snippetStartLine - 1, snippetEndLine).join("\n").trim();
+      parts.push("snippet:");
+      parts.push(snippet.length > 0 ? snippet : "[empty]");
+    } catch {
+      parts.push("snippet:");
+      parts.push("[unavailable]");
+    }
+
+    return parts.join("\n");
   }
 
   async initialize(): Promise<void> {

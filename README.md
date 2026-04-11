@@ -532,18 +532,14 @@ Zero-config by default (uses `auto` mode). Customize in `.opencode/codebase-inde
     "rerankTopN": 20,                         // Deterministic rerank depth
     "contextLines": 0                         // Extra lines before/after match
   },
-
-  // === Reranking API ===
   "reranker": {
-    "enabled": true,                          // Enable API reranking
-    "baseUrl": "https://api.siliconflow.cn/v1",
-    "model": "BAAI/bge-reranker-v2-m3",
-    "apiKey": "{env:SILICONFLOW_API_KEY}",
-    "topN": 20,                               // Number of results to rerank
-    "timeoutMs": 30000                        // Request timeout (ms)
+    "enabled": false,
+    "provider": "cohere",
+    "model": "rerank-v3.5",
+    "apiKey": "{env:RERANK_API_KEY}",
+    "topN": 15,
+    "timeoutMs": 10000
   },
-
-  // === Debug ===
   "debug": {
     "enabled": false,                         // Enable debug logging
     "logLevel": "info",                       // error | warn | info | debug
@@ -604,23 +600,14 @@ String values in `codebase-index.json` can reference environment variables with 
 | `rrfK` | `60` | RRF smoothing constant. Higher values flatten rank impact, lower values prioritize top-ranked candidates more strongly |
 | `rerankTopN` | `20` | Deterministic rerank depth cap. Applies lightweight name/path/chunk-type rerank to top-N only |
 | `contextLines` | `0` | Extra lines to include before/after each match |
-| **reranker** | | |
-| `reranker.enabled` | `false` | Enable API-based reranking |
-| `reranker.baseUrl` | - | Rerank API endpoint URL |
-| `reranker.model` | - | Reranking model name (e.g. `BAAI/bge-reranker-v2-m3`) |
-| `reranker.apiKey` | - | API key for reranking service (use `{env:VAR}` for security) |
-| `reranker.topN` | `20` | Number of top results to rerank via API |
-| `reranker.timeoutMs` | `30000` | Rerank API request timeout in milliseconds |
-| **customProvider** | | |
-| `customProvider.baseUrl` | - | Base URL of OpenAI-compatible embeddings API (e.g. `https://api.siliconflow.cn/v1`) |
-| `customProvider.model` | - | Model name (e.g. `BAAI/bge-m3`, `nomic-embed-text`) |
-| `customProvider.dimensions` | - | Vector dimensions (e.g. `1024` for BGE-M3, `768` for nomic-embed-text) |
-| `customProvider.apiKey` | - | API key (use `{env:VAR}` for security) |
-| `customProvider.maxTokens` | `8192` | Max tokens per input text |
-| `customProvider.timeoutMs` | `30000` | Request timeout in milliseconds |
-| `customProvider.concurrency` | `3` | Max concurrent embedding requests |
-| `customProvider.requestIntervalMs` | `1000` | Minimum delay between requests (ms). Set to `0` for local servers |
-| `customProvider.maxBatchSize` | - | Max inputs per `/embeddings` request. Cap for servers with batch limits |
+| **reranker** | | Optional second-stage model reranker for the top candidate pool |
+| `enabled` | `false` | Turn external reranking on/off |
+| `provider` | `"custom"` | Hosted shortcuts: `cohere`, `jina`, or `custom` |
+| `model` | — | Reranker model name required when enabled |
+| `baseUrl` | provider default | Override reranker endpoint base URL. `cohere` → `https://api.cohere.ai/v1`, `jina` → `https://api.jina.ai/v1` |
+| `apiKey` | — | API key for hosted reranker providers |
+| `topN` | `15` | Number of top candidates to send to the external reranker |
+| `timeoutMs` | `10000` | Timeout for external rerank requests |
 | **debug** | | |
 | `enabled` | `false` | Enable debug logging and metrics collection |
 | `logLevel` | `"info"` | Log level: `error`, `warn`, `info`, `debug` |
@@ -633,9 +620,10 @@ String values in `codebase-index.json` can reference environment variables with 
 
 ### Retrieval ranking behavior
 
-- `codebase_search` and `codebase_peek` use the hybrid path: semantic + keyword retrieval → fusion (`fusionStrategy`) → deterministic rerank (`rerankTopN`) → filtering.
+- `codebase_search` and `codebase_peek` use the hybrid path: semantic + keyword retrieval → fusion (`fusionStrategy`) → deterministic rerank (`rerankTopN`) → optional external reranker (`reranker`) → filtering.
 - `find_similar` stays semantic-only: semantic retrieval + deterministic rerank only (no keyword retrieval, no RRF).
 - For compatibility rollbacks, set `search.fusionStrategy` to `"weighted"` to use the legacy weighted fusion path.
+- When enabled, the external reranker sees path metadata plus a bounded on-disk code snippet for each candidate so it can distinguish real implementations from docs/tests more reliably.
 - Retrieval benchmark artifacts are separated by role:
   - baseline (versioned): `benchmarks/baselines/retrieval-baseline.json`
   - latest candidate run (generated): `benchmark-results/retrieval-candidate.json`

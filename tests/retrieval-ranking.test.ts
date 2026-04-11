@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+
+import { afterEach, describe, expect, it } from "vitest";
 
 import type { ChunkMetadata } from "../src/native/index.js";
 import {
@@ -16,6 +20,8 @@ import { parseConfig } from "../src/config/schema.js";
 
 type Candidate = { id: string; score: number; metadata: ChunkMetadata };
 
+const tempDirs: string[] = [];
+
 function meta(overrides: Partial<ChunkMetadata>): ChunkMetadata {
   return {
     filePath: "/repo/src/unknown.ts",
@@ -28,7 +34,25 @@ function meta(overrides: Partial<ChunkMetadata>): ChunkMetadata {
   };
 }
 
+function createTempFile(relativePath: string, content: string): string {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "reranker-doc-"));
+  tempDirs.push(tempDir);
+  const filePath = path.join(tempDir, relativePath);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content, "utf-8");
+  return filePath;
+}
+
 describe("retrieval ranking", () => {
+  afterEach(() => {
+    while (tempDirs.length > 0) {
+      const dir = tempDirs.pop();
+      if (dir) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
   it("fuses hybrid results using RRF rank ordering", () => {
     const semantic: Candidate[] = [
       { id: "a", score: 0.91, metadata: meta({ filePath: "/repo/src/auth.ts", name: "validateAuth", chunkType: "function" }) },
@@ -354,9 +378,15 @@ describe("retrieval ranking", () => {
     });
     const indexer = new Indexer("/repo", config);
 
+    const firstPath = createTempFile("src/first.ts", "export function firstThing() {\n  return 'first';\n}\n");
+    const secondPath = createTempFile("src/second.ts", "export function secondThing() {\n  return 'second';\n}\n");
+    const thirdPath = createTempFile("src/third.ts", "export function thirdThing() {\n  return 'third';\n}\n");
+
     const fetchSpy = globalThis.fetch;
-    globalThis.fetch = (async (input) => {
+    let rerankBody: { documents?: string[] } | undefined;
+    globalThis.fetch = (async (input, init) => {
       if (String(input).includes("/rerank")) {
+        rerankBody = JSON.parse(String(init?.body ?? "{}")) as { documents?: string[] };
         return new Response(JSON.stringify({
           results: [
             { index: 2, relevance_score: 0.99 },
@@ -369,9 +399,9 @@ describe("retrieval ranking", () => {
     }) as typeof fetch;
 
     const candidates: Candidate[] = [
-      { id: "first", score: 0.9, metadata: meta({ filePath: "/repo/src/first.ts", name: "firstThing", chunkType: "function" }) },
-      { id: "second", score: 0.89, metadata: meta({ filePath: "/repo/src/second.ts", name: "secondThing", chunkType: "function" }) },
-      { id: "third", score: 0.88, metadata: meta({ filePath: "/repo/src/third.ts", name: "thirdThing", chunkType: "function" }) },
+      { id: "first", score: 0.9, metadata: meta({ filePath: firstPath, name: "firstThing", chunkType: "function", startLine: 1, endLine: 3 }) },
+      { id: "second", score: 0.89, metadata: meta({ filePath: secondPath, name: "secondThing", chunkType: "function", startLine: 1, endLine: 3 }) },
+      { id: "third", score: 0.88, metadata: meta({ filePath: thirdPath, name: "thirdThing", chunkType: "function", startLine: 1, endLine: 3 }) },
     ];
 
     const reranked = await (indexer as unknown as {
@@ -379,6 +409,9 @@ describe("retrieval ranking", () => {
     }).rerankCandidatesWithApi("find third thing", candidates);
 
     expect(reranked.map((candidate) => candidate.id)).toEqual(["third", "first", "second"]);
+    expect(rerankBody?.documents?.[0]).toContain("snippet:");
+    expect(rerankBody?.documents?.[0]).toContain("export function firstThing()");
+    expect(rerankBody?.documents?.[0]).toContain("intent_hint: implementation");
     globalThis.fetch = fetchSpy;
   });
 
@@ -400,6 +433,10 @@ describe("retrieval ranking", () => {
     });
     const indexer = new Indexer("/repo", config);
 
+    const firstPath = createTempFile("src/first.ts", "export function firstThing() {\n  return 'first';\n}\n");
+    const secondPath = createTempFile("src/second.ts", "export function secondThing() {\n  return 'second';\n}\n");
+    const thirdPath = createTempFile("src/third.ts", "export function thirdThing() {\n  return 'third';\n}\n");
+
     const fetchSpy = globalThis.fetch;
     globalThis.fetch = (async (input) => {
       if (String(input).includes("/rerank")) {
@@ -409,9 +446,9 @@ describe("retrieval ranking", () => {
     }) as typeof fetch;
 
     const candidates: Candidate[] = [
-      { id: "first", score: 0.9, metadata: meta({ filePath: "/repo/src/first.ts", name: "firstThing", chunkType: "function" }) },
-      { id: "second", score: 0.89, metadata: meta({ filePath: "/repo/src/second.ts", name: "secondThing", chunkType: "function" }) },
-      { id: "third", score: 0.88, metadata: meta({ filePath: "/repo/src/third.ts", name: "thirdThing", chunkType: "function" }) },
+      { id: "first", score: 0.9, metadata: meta({ filePath: firstPath, name: "firstThing", chunkType: "function", startLine: 1, endLine: 3 }) },
+      { id: "second", score: 0.89, metadata: meta({ filePath: secondPath, name: "secondThing", chunkType: "function", startLine: 1, endLine: 3 }) },
+      { id: "third", score: 0.88, metadata: meta({ filePath: thirdPath, name: "thirdThing", chunkType: "function", startLine: 1, endLine: 3 }) },
     ];
 
     const reranked = await (indexer as unknown as {
