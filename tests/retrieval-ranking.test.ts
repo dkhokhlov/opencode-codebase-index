@@ -106,6 +106,28 @@ describe("retrieval ranking", () => {
     expect(rerankedAgain.map(r => r.id)).toEqual(["exactName", "pathOverlap", "generic"]);
   });
 
+  it("diversifies exploratory queries to avoid same-file duplicates dominating top results", () => {
+    const candidates: Candidate[] = [
+      { id: "fileA-1", score: 0.96, metadata: meta({ filePath: "/repo/src/auth.ts", name: "validateAuth", chunkType: "function" }) },
+      { id: "fileA-2", score: 0.95, metadata: meta({ filePath: "/repo/src/auth.ts", name: "refreshAuth", chunkType: "function" }) },
+      { id: "fileB-1", score: 0.94, metadata: meta({ filePath: "/repo/src/session.ts", name: "loadSession", chunkType: "function" }) },
+    ];
+
+    const reranked = rerankResults("auth flow", candidates, 10);
+    expect(reranked.map((candidate) => candidate.id).slice(0, 2)).toEqual(["fileA-1", "fileB-1"]);
+  });
+
+  it("does not diversify away exact-definition ranking for identifier queries", () => {
+    const candidates: Candidate[] = [
+      { id: "target", score: 0.96, metadata: meta({ filePath: "/repo/src/auth.ts", name: "rankHybridResults", chunkType: "function" }) },
+      { id: "same-file-secondary", score: 0.95, metadata: meta({ filePath: "/repo/src/auth.ts", name: "rankHybridResultsHelper", chunkType: "function" }) },
+      { id: "other-file", score: 0.94, metadata: meta({ filePath: "/repo/src/session.ts", name: "loadSession", chunkType: "function" }) },
+    ];
+
+    const reranked = rerankResults("where is rankHybridResults implementation", candidates, 10);
+    expect(reranked.map((candidate) => candidate.id).slice(0, 2)).toEqual(["target", "same-file-secondary"]);
+  });
+
   it("applies hybrid ranking path for search and semantic-only rerank for findSimilar", () => {
     const semantic: Candidate[] = [
       { id: "s1", score: 0.95, metadata: meta({ filePath: "/repo/src/auth.ts", name: "auth", chunkType: "function" }) },

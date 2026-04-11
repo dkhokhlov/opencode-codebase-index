@@ -887,8 +887,47 @@ export function rerankResults(
     });
   }
 
+  const shouldDiversify = !(preferSourcePaths && identifierHints.length > 0);
+  const diversifiedHead = shouldDiversify ? diversifyRerankedHead(head) : head;
+
   const tail = candidates.slice(topN);
-  return [...head.map((entry) => entry.candidate), ...tail];
+  return [...diversifiedHead.map((entry) => entry.candidate), ...tail];
+}
+
+function diversifyRerankedHead<T extends {
+  candidate: RankedCandidate;
+  originalIndex: number;
+}>(head: T[]): T[] {
+  if (head.length <= 2) {
+    return head;
+  }
+
+  const seenFiles = new Set<string>();
+  const firstPass: T[] = [];
+  const remainder: T[] = [];
+
+  for (const entry of head) {
+    const filePath = entry.candidate.metadata.filePath;
+    if (!seenFiles.has(filePath)) {
+      seenFiles.add(filePath);
+      firstPass.push(entry);
+    } else {
+      remainder.push(entry);
+    }
+  }
+
+  if (remainder.length === 0) {
+    return head;
+  }
+
+  return [...firstPass, ...remainder].sort((a, b) => {
+    const aPrimary = firstPass.includes(a) ? 1 : 0;
+    const bPrimary = firstPass.includes(b) ? 1 : 0;
+    if (aPrimary !== bPrimary) {
+      return bPrimary - aPrimary;
+    }
+    return a.originalIndex - b.originalIndex;
+  });
 }
 
 export function rankHybridResults(
