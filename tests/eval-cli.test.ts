@@ -108,6 +108,8 @@ describe("eval cli", () => {
         hitAt10: 1,
         mrrAt10: 1,
         ndcgAt10: 1,
+        distinctTop3Ratio: 1,
+        rawDistinctTop3Ratio: 1,
         latencyMs: { p50: 1, p95: 2, p99: 3 },
         tokenEstimate: { queryTokens: 10, embeddingTokensUsed: 20 },
         embedding: { callCount: 1, estimatedCostUsd: 0, costPer1MTokensUsd: 0 },
@@ -122,6 +124,54 @@ describe("eval cli", () => {
 
     writeFileSync(currentSummaryPath, JSON.stringify(summary, null, 2), "utf-8");
     writeFileSync(baselineSummaryPath, JSON.stringify(summary, null, 2), "utf-8");
+
+    const exitCode = await handleEvalCommand(
+      ["diff", "--current", "current.json", "--against", "baseline.json"],
+      tempDir
+    );
+
+    expect(exitCode).toBe(0);
+  });
+
+  it("allows eval diff to read legacy summaries missing diversity metrics", async () => {
+    const currentSummaryPath = path.join(tempDir, "current.json");
+    const baselineSummaryPath = path.join(tempDir, "baseline.json");
+
+    const legacySummary = {
+      generatedAt: new Date().toISOString(),
+      projectRoot: tempDir,
+      datasetPath: "benchmarks/golden/small.json",
+      datasetName: "small",
+      datasetVersion: "1.0.0",
+      queryCount: 1,
+      topK: 10,
+      searchConfig: {
+        fusionStrategy: "rrf",
+        hybridWeight: 0.4,
+        rrfK: 60,
+        rerankTopN: 20,
+      },
+      metrics: {
+        hitAt1: 1,
+        hitAt3: 1,
+        hitAt5: 1,
+        hitAt10: 1,
+        mrrAt10: 1,
+        ndcgAt10: 1,
+        latencyMs: { p50: 1, p95: 2, p99: 3 },
+        tokenEstimate: { queryTokens: 10, embeddingTokensUsed: 20 },
+        embedding: { callCount: 1, estimatedCostUsd: 0, costPer1MTokensUsd: 0 },
+        failureBuckets: {
+          "wrong-file": 0,
+          "wrong-symbol": 0,
+          "docs-tests-outranking-source": 0,
+          "no-relevant-hit-top-k": 0,
+        },
+      },
+    };
+
+    writeFileSync(currentSummaryPath, JSON.stringify(legacySummary, null, 2), "utf-8");
+    writeFileSync(baselineSummaryPath, JSON.stringify(legacySummary, null, 2), "utf-8");
 
     const exitCode = await handleEvalCommand(
       ["diff", "--current", "current.json", "--against", "baseline.json"],

@@ -336,8 +336,12 @@ export async function handleEvalCommand(args: string[], cwd: string): Promise<nu
     if (!parsed.againstPath.endsWith(".json")) {
       throw new Error("eval diff --against must point to a summary JSON file");
     }
-    const currentSummary = loadSummary(path.resolve(parsed.projectRoot, currentPath));
-    const baselineSummary = loadSummary(path.resolve(parsed.projectRoot, parsed.againstPath));
+    const currentSummary = loadSummary(path.resolve(parsed.projectRoot, currentPath), {
+      allowLegacyDiversityMetrics: true,
+    });
+    const baselineSummary = loadSummary(path.resolve(parsed.projectRoot, parsed.againstPath), {
+      allowLegacyDiversityMetrics: true,
+    });
     const comparison = compareSummaries(
       currentSummary,
       baselineSummary,
