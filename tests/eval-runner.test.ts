@@ -161,6 +161,94 @@ describe("eval runner", () => {
     expect(readFileSync(path.join(compareRun.outputDir, "compare.json"), "utf-8")).toContain("\"deltas\"");
   });
 
+  it("fails fast when baseline summary is missing required diversity metrics", async () => {
+    const baselineRun = await runEvaluation({
+      projectRoot: tempDir,
+      datasetPath: "benchmarks/golden/small.json",
+      outputRoot: "benchmarks/results",
+      ciMode: false,
+      reindex: false,
+    });
+
+    const legacyBaseline = {
+      ...baselineRun.summary,
+      metrics: {
+        ...baselineRun.summary.metrics,
+      },
+    } as Record<string, unknown>;
+
+    delete (legacyBaseline.metrics as Record<string, unknown>).distinctTop3Ratio;
+    delete (legacyBaseline.metrics as Record<string, unknown>).rawDistinctTop3Ratio;
+
+    const baselinePath = path.join(tempDir, "benchmarks", "baselines", "legacy-baseline-summary.json");
+    writeFileSync(baselinePath, JSON.stringify(legacyBaseline, null, 2), "utf-8");
+
+    await expect(
+      runEvaluation({
+        projectRoot: tempDir,
+        datasetPath: "benchmarks/golden/small.json",
+        outputRoot: "benchmarks/results",
+        againstPath: "benchmarks/baselines/legacy-baseline-summary.json",
+        ciMode: false,
+        reindex: false,
+      })
+    ).rejects.toThrow(/metrics\.distinctTop3Ratio must be a finite number/);
+  });
+
+  it("fails ci mode when budget baseline summary is missing required diversity metrics", async () => {
+    const baselineRun = await runEvaluation({
+      projectRoot: tempDir,
+      datasetPath: "benchmarks/golden/small.json",
+      outputRoot: "benchmarks/results",
+      ciMode: false,
+      reindex: false,
+    });
+
+    const legacyBaseline = {
+      ...baselineRun.summary,
+      metrics: {
+        ...baselineRun.summary.metrics,
+      },
+    } as Record<string, unknown>;
+
+    delete (legacyBaseline.metrics as Record<string, unknown>).distinctTop3Ratio;
+    delete (legacyBaseline.metrics as Record<string, unknown>).rawDistinctTop3Ratio;
+
+    writeFileSync(
+      path.join(tempDir, "benchmarks", "baselines", "legacy-baseline-summary.json"),
+      JSON.stringify(legacyBaseline, null, 2),
+      "utf-8"
+    );
+
+    writeFileSync(
+      path.join(tempDir, "benchmarks", "budgets", "legacy-check.json"),
+      JSON.stringify(
+        {
+          name: "legacy-check",
+          baselinePath: "benchmarks/baselines/legacy-baseline-summary.json",
+          failOnMissingBaseline: true,
+          thresholds: {
+            rawDistinctTop3RatioMaxDrop: 0.1,
+          },
+        },
+        null,
+        2
+      ),
+      "utf-8"
+    );
+
+    await expect(
+      runEvaluation({
+        projectRoot: tempDir,
+        datasetPath: "benchmarks/golden/small.json",
+        outputRoot: "benchmarks/results",
+        ciMode: true,
+        budgetPath: "benchmarks/budgets/legacy-check.json",
+        reindex: false,
+      })
+    ).rejects.toThrow(/metrics\.distinctTop3Ratio must be a finite number/);
+  });
+
   it("fails ci gate when thresholds regress beyond tolerance", async () => {
     const baselineRun = await runEvaluation({
       projectRoot: tempDir,

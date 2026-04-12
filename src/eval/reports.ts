@@ -9,6 +9,31 @@ import type {
   SweepAggregateReport,
 } from "./types.js";
 
+function assertFiniteNumber(value: unknown, path: string): number {
+  if (typeof value !== "number" || Number.isNaN(value) || !Number.isFinite(value)) {
+    throw new Error(`${path} must be a finite number`);
+  }
+  return value;
+}
+
+function validateSummary(summary: EvalSummary, summaryPath: string): EvalSummary {
+  assertFiniteNumber(summary.metrics.hitAt1, `${summaryPath}.metrics.hitAt1`);
+  assertFiniteNumber(summary.metrics.hitAt3, `${summaryPath}.metrics.hitAt3`);
+  assertFiniteNumber(summary.metrics.hitAt5, `${summaryPath}.metrics.hitAt5`);
+  assertFiniteNumber(summary.metrics.hitAt10, `${summaryPath}.metrics.hitAt10`);
+  assertFiniteNumber(summary.metrics.mrrAt10, `${summaryPath}.metrics.mrrAt10`);
+  assertFiniteNumber(summary.metrics.ndcgAt10, `${summaryPath}.metrics.ndcgAt10`);
+  assertFiniteNumber(summary.metrics.distinctTop3Ratio, `${summaryPath}.metrics.distinctTop3Ratio`);
+  assertFiniteNumber(summary.metrics.rawDistinctTop3Ratio, `${summaryPath}.metrics.rawDistinctTop3Ratio`);
+  assertFiniteNumber(summary.metrics.latencyMs.p50, `${summaryPath}.metrics.latencyMs.p50`);
+  assertFiniteNumber(summary.metrics.latencyMs.p95, `${summaryPath}.metrics.latencyMs.p95`);
+  assertFiniteNumber(summary.metrics.latencyMs.p99, `${summaryPath}.metrics.latencyMs.p99`);
+  assertFiniteNumber(summary.metrics.embedding.callCount, `${summaryPath}.metrics.embedding.callCount`);
+  assertFiniteNumber(summary.metrics.embedding.estimatedCostUsd, `${summaryPath}.metrics.embedding.estimatedCostUsd`);
+
+  return summary;
+}
+
 function formatPct(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
 }
@@ -28,7 +53,7 @@ function signed(value: number, digits = 4): string {
 
 export function loadSummary(summaryPath: string): EvalSummary {
   const raw = readFileSync(summaryPath, "utf-8");
-  return JSON.parse(raw) as EvalSummary;
+  return validateSummary(JSON.parse(raw) as EvalSummary, summaryPath);
 }
 
 export function createRunDirectory(outputRoot: string, timestampOverride?: string): string {
