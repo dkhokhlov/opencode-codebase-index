@@ -4,7 +4,6 @@ import { fileURLToPath } from "url";
 
 import { parseConfig } from "./config/schema.js";
 import { loadMergedConfig } from "./config/merger.js";
-import { Indexer } from "./indexer/index.js";
 import { createWatcherWithIndexer } from "./watcher/index.js";
 import {
   codebase_search,
@@ -20,10 +19,19 @@ import {
   add_knowledge_base,
   list_knowledge_bases,
   remove_knowledge_base,
+  getSharedIndexer,
   initializeTools,
 } from "./tools/index.js";
 import { loadCommandsFromDirectory } from "./commands/loader.js";
 import { hasProjectMarker } from "./utils/files.js";
+import type { CombinedWatcher } from "./watcher/index.js";
+
+let activeWatcher: CombinedWatcher | null = null;
+
+function replaceActiveWatcher(nextWatcher: CombinedWatcher | null): void {
+  activeWatcher?.stop();
+  activeWatcher = nextWatcher;
+}
 
 function getCommandsDir(): string {
   let currentDir = process.cwd();
@@ -43,7 +51,7 @@ const plugin: Plugin = async ({ directory }) => {
 
     initializeTools(projectRoot, config);
 
-    const indexer = new Indexer(projectRoot, config);
+    const indexer = getSharedIndexer();
 
     const isValidProject = !config.indexing.requireProjectMarker || hasProjectMarker(projectRoot);
 
@@ -61,7 +69,9 @@ const plugin: Plugin = async ({ directory }) => {
     }
 
     if (config.indexing.watchFiles && isValidProject) {
-      createWatcherWithIndexer(indexer, projectRoot, config);
+      replaceActiveWatcher(createWatcherWithIndexer(getSharedIndexer, projectRoot, config));
+    } else {
+      replaceActiveWatcher(null);
     }
 
     return {
