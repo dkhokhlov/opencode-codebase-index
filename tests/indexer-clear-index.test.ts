@@ -286,15 +286,55 @@ describe("indexer clearIndex force rebuild", () => {
     const db = new Database(dbPath);
     const projectBChunk = db.getChunksByFile(projectBFile)[0];
     const projectAKey = `${hashContent(path.resolve(projectA)).slice(0, 16)}:default`;
-    const currentBranchKey = `${hashContent(path.resolve(projectA)).slice(0, 16)}:default`;
     const projectBKey = `${hashContent(path.resolve(projectB)).slice(0, 16)}:default`;
 
     db.clearBranch(projectBKey);
     db.addChunksToBranchBatch("default", [projectBChunk.chunkId]);
+    db.deleteMetadata(`index.globalBranchMigration.${hashContent(path.resolve(projectB)).slice(0, 16)}`);
     db.clearBranch(projectAKey);
 
     const searchResults = await createIndexer(projectB, 8, "global").search("beta", 5);
     expect(searchResults.some((result) => result.filePath === projectBFile)).toBe(true);
+  });
+
+  it("stops reading legacy global branch rows for a repo after that repo is reindexed", async () => {
+    vi.stubEnv("HOME", tempHome);
+
+    const projectA = path.join(tempDir, "project-a");
+    const projectB = path.join(tempDir, "project-b");
+    const projectAFile = path.join(projectA, "src", "a.ts");
+    const projectBFile = path.join(projectB, "src", "b.ts");
+    fs.mkdirSync(path.dirname(projectAFile), { recursive: true });
+    fs.mkdirSync(path.dirname(projectBFile), { recursive: true });
+    fs.writeFileSync(projectAFile, "export function alpha() { return 'a'; }\n", "utf-8");
+    fs.writeFileSync(projectBFile, "export function beta() { return 'b'; }\n", "utf-8");
+
+    await createIndexer(projectA, 8, "global").index();
+    await createIndexer(projectB, 8, "global").index();
+
+    const dbPath = path.join(tempHome, ".opencode", "global-index", "codebase.db");
+    const db = new Database(dbPath);
+    const projectAChunk = db.getChunksByFile(projectAFile)[0];
+    const projectBChunk = db.getChunksByFile(projectBFile)[0];
+    const projectAKey = `${hashContent(path.resolve(projectA)).slice(0, 16)}:default`;
+    const projectBKey = `${hashContent(path.resolve(projectB)).slice(0, 16)}:default`;
+
+    db.clearBranch(projectAKey);
+    db.addChunksToBranchBatch("default", [projectAChunk.chunkId]);
+    db.deleteMetadata(`index.globalBranchMigration.${hashContent(path.resolve(projectA)).slice(0, 16)}`);
+
+    const legacyVisibleResults = await createIndexer(projectA, 8, "global").search("alpha", 5);
+    expect(legacyVisibleResults.some((result) => result.filePath === projectAFile)).toBe(true);
+
+    await createIndexer(projectA, 8, "global").index();
+
+    db.clearBranch(projectAKey);
+    db.addChunksToBranchBatch("default", [projectBChunk.chunkId]);
+
+    const isolatedResults = await createIndexer(projectA, 8, "global").search("beta", 5);
+    expect(isolatedResults.some((result) => result.filePath === projectBFile)).toBe(false);
+    expect(db.getMetadata(`index.globalBranchMigration.${hashContent(path.resolve(projectA)).slice(0, 16)}`)).toBe("done");
+    expect(db.getBranchChunkIds(projectBKey).length).toBeGreaterThan(0);
   });
 
   it("clears both legacy and namespaced branch rows for the current repo during global force reset", async () => {
@@ -325,6 +365,67 @@ describe("indexer clearIndex force rebuild", () => {
 
     const searchResults = await createIndexer(projectA, 8, "global").search("alpha", 5);
     expect(searchResults.filter((result) => result.filePath === projectAFile)).toHaveLength(1);
+  });
+
+  it("preserves foreign failed-batch and file-hash state during global clear when no vectors exist yet", async () => {
+    vi.stubEnv("HOME", tempHome);
+
+    const projectA = path.join(tempDir, "project-a");
+    const projectB = path.join(tempDir, "project-b");
+    const projectAFile = path.join(projectA, "src", "a.ts");
+    const projectBFile = path.join(projectB, "src", "b.ts");
+    fs.mkdirSync(path.dirname(projectAFile), { recursive: true });
+    fs.mkdirSync(path.dirname(projectBFile), { recursive: true });
+    fs.writeFileSync(projectAFile, "export function alpha() { return 'a'; }\n", "utf-8");
+    fs.writeFileSync(projectBFile, "export function beta() { return 'b'; }\n", "utf-8");
+
+    const projectAIndexer = createIndexer(projectA, 8, "global");
+
+    await projectAIndexer.index();
+    const fileHashCachePath = path.join(tempHome, ".opencode", "global-index", "file-hashes.json");
+    fs.writeFileSync(
+      fileHashCachePath,
+      JSON.stringify({ [projectAFile]: "project-a-hash", [projectBFile]: "foreign-hash" }, null, 2),
+      "utf-8"
+    );
+
+    const failedBatchesPath = path.join(tempHome, ".opencode", "global-index", "failed-batches.json");
+    fs.writeFileSync(
+      failedBatchesPath,
+      JSON.stringify([
+      {
+        chunks: [
+          {
+            id: "pending-beta",
+            text: "beta pending",
+            content: "export function beta() { return 'b'; }",
+            contentHash: "pending-hash",
+            metadata: {
+              filePath: projectBFile,
+              startLine: 1,
+              endLine: 1,
+              language: "typescript",
+              chunkType: "function",
+              hash: "pending-hash",
+              name: "beta",
+            },
+          },
+        ],
+        error: "simulated failure",
+        attemptCount: 1,
+        lastAttempt: new Date().toISOString(),
+      },
+      ], null, 2),
+      "utf-8"
+    );
+
+    await projectAIndexer.clearIndex();
+
+    const fileHashCache = JSON.parse(fs.readFileSync(fileHashCachePath, "utf-8")) as Record<string, string>;
+    expect(fileHashCache[projectBFile]).toBe("foreign-hash");
+
+    const failedBatches = JSON.parse(fs.readFileSync(failedBatchesPath, "utf-8")) as Array<{ chunks: Array<{ metadata: { filePath: string } }> }>;
+    expect(failedBatches.some((batch) => batch.chunks.some((chunk) => chunk.metadata.filePath === projectBFile))).toBe(true);
   });
 
   it("preserves resolved call edges for shared symbols kept by another global project", async () => {
