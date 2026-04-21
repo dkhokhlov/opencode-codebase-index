@@ -696,6 +696,11 @@ export class Database {
     return this.inner.clearBranch(branch);
   }
 
+  deleteBranchChunksByChunkIds(chunkIds: string[]): number {
+    if (chunkIds.length === 0) return 0;
+    return this.inner.deleteBranchChunksByChunkIds(chunkIds);
+  }
+
   getBranchChunkIds(branch: string): string[] {
     return this.inner.getBranchChunkIds(branch);
   }
@@ -726,6 +731,11 @@ export class Database {
 
   clearAllIndexedData(): void {
     this.inner.clearAllIndexedData();
+  }
+
+  clearCallEdgeTargetsForSymbols(symbolIds: string[]): number {
+    if (symbolIds.length === 0) return 0;
+    return this.inner.clearCallEdgeTargetsForSymbols(symbolIds);
   }
 
   gcOrphanEmbeddings(): number {
@@ -819,6 +829,11 @@ export class Database {
 
   clearBranchSymbols(branch: string): number {
     return this.inner.clearBranchSymbols(branch);
+  }
+
+  deleteBranchSymbolsBySymbolIds(symbolIds: string[]): number {
+    if (symbolIds.length === 0) return 0;
+    return this.inner.deleteBranchSymbolsBySymbolIds(symbolIds);
   }
 
   // ── GC methods for symbols/edges ─────────────────────────────────

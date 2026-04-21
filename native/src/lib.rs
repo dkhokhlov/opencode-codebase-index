@@ -605,6 +605,17 @@ impl Database {
     }
 
     #[napi]
+    pub fn delete_branch_chunks_by_chunk_ids(&self, chunk_ids: Vec<String>) -> Result<u32> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let count = db::delete_branch_chunks_by_chunk_ids(&conn, &chunk_ids)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(count as u32)
+    }
+
+    #[napi]
     pub fn get_branch_chunk_ids(&self, branch: String) -> Result<Vec<String>> {
         let conn = self
             .conn
@@ -680,6 +691,17 @@ impl Database {
             .lock()
             .map_err(|e| Error::from_reason(e.to_string()))?;
         db::clear_all_indexed_data(&conn).map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    #[napi]
+    pub fn clear_call_edge_targets_for_symbols(&self, symbol_ids: Vec<String>) -> Result<u32> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let count = db::clear_call_edge_targets_for_symbols(&conn, &symbol_ids)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(count as u32)
     }
 
     #[napi]
@@ -1058,6 +1080,17 @@ impl Database {
             .lock()
             .map_err(|e| Error::from_reason(e.to_string()))?;
         let count = db::clear_branch_symbols(&conn, &branch)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(count as u32)
+    }
+
+    #[napi]
+    pub fn delete_branch_symbols_by_symbol_ids(&self, symbol_ids: Vec<String>) -> Result<u32> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let count = db::delete_branch_symbols_by_symbol_ids(&conn, &symbol_ids)
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(count as u32)
     }

@@ -620,6 +620,31 @@ pub fn clear_branch(conn: &Connection, branch: &str) -> DbResult<usize> {
     Ok(count)
 }
 
+/// Remove branch catalog entries for specific chunk IDs.
+pub fn delete_branch_chunks_by_chunk_ids(
+    conn: &Connection,
+    chunk_ids: &[String],
+) -> DbResult<usize> {
+    if chunk_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total = 0;
+    for chunk in chunk_ids.chunks(SQL_BIND_PARAM_BATCH_SIZE) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "DELETE FROM branch_chunks WHERE chunk_id IN ({})",
+            placeholders
+        );
+        let params = rusqlite::params_from_iter(chunk.iter());
+        total += conn.execute(&sql, params)?;
+    }
+
+    Ok(total)
+}
+
 /// Get all chunk IDs for a branch
 pub fn get_branch_chunk_ids(conn: &Connection, branch: &str) -> DbResult<Vec<String>> {
     let mut stmt = conn.prepare("SELECT chunk_id FROM branch_chunks WHERE branch = ?")?;
@@ -1112,6 +1137,31 @@ pub fn delete_call_edges_by_file(conn: &Connection, file_path: &str) -> DbResult
     Ok(count)
 }
 
+/// Clear resolved call targets that point at symbols being deleted.
+pub fn clear_call_edge_targets_for_symbols(
+    conn: &Connection,
+    symbol_ids: &[String],
+) -> DbResult<usize> {
+    if symbol_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total = 0;
+    for chunk in symbol_ids.chunks(SQL_BIND_PARAM_BATCH_SIZE) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "UPDATE call_edges SET to_symbol_id = NULL, is_resolved = 0 WHERE to_symbol_id IN ({})",
+            placeholders
+        );
+        let params = rusqlite::params_from_iter(chunk.iter());
+        total += conn.execute(&sql, params)?;
+    }
+
+    Ok(total)
+}
+
 /// Resolve a call edge by setting the target symbol
 pub fn resolve_call_edge(conn: &Connection, edge_id: &str, to_symbol_id: &str) -> DbResult<()> {
     conn.execute(
@@ -1186,6 +1236,31 @@ pub fn clear_branch_symbols(conn: &Connection, branch: &str) -> DbResult<usize> 
         params![branch],
     )?;
     Ok(count)
+}
+
+/// Remove branch-symbol catalog entries for specific symbol IDs.
+pub fn delete_branch_symbols_by_symbol_ids(
+    conn: &Connection,
+    symbol_ids: &[String],
+) -> DbResult<usize> {
+    if symbol_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total = 0;
+    for chunk in symbol_ids.chunks(SQL_BIND_PARAM_BATCH_SIZE) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "DELETE FROM branch_symbols WHERE symbol_id IN ({})",
+            placeholders
+        );
+        let params = rusqlite::params_from_iter(chunk.iter());
+        total += conn.execute(&sql, params)?;
+    }
+
+    Ok(total)
 }
 
 /// Remove all indexed data so a force rebuild starts from an empty database.

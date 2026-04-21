@@ -205,6 +205,12 @@ interface IndexCompatibility {
 const INDEX_METADATA_VERSION = "1";
 const RANKING_TOKEN_CACHE_LIMIT = 4096;
 
+function isPathWithinRoot(filePath: string, rootPath: string): boolean {
+  const normalizedFilePath = path.resolve(filePath);
+  const normalizedRoot = path.resolve(rootPath);
+  return normalizedFilePath === normalizedRoot || normalizedFilePath.startsWith(`${normalizedRoot}${path.sep}`);
+}
+
 const rankingQueryTokenCache = new Map<string, Set<string>>();
 const rankingNameTokenCache = new Map<string, Set<string>>();
 const rankingPathTokenCache = new Map<string, Set<string>>();
@@ -1483,6 +1489,134 @@ export class Indexer {
     renameSync(tempPath, targetPath);
   }
 
+  private getScopedRoots(): string[] {
+    const roots = new Set<string>([path.resolve(this.projectRoot)]);
+
+    for (const kbRoot of this.config.knowledgeBases) {
+      roots.add(path.resolve(this.projectRoot, kbRoot));
+    }
+
+    return Array.from(roots);
+  }
+
+  private getBranchCatalogKey(): string {
+    const branchName = this.currentBranch || "default";
+    if (this.config.scope !== "global") {
+      return branchName;
+    }
+
+    const projectHash = hashContent(path.resolve(this.projectRoot)).slice(0, 16);
+    return `${projectHash}:${branchName}`;
+  }
+
+  private isFileInCurrentScope(filePath: string, roots: string[]): boolean {
+    return roots.some((root) => isPathWithinRoot(filePath, root));
+  }
+
+  private clearScopedFileHashCache(roots: string[]): void {
+    for (const filePath of Array.from(this.fileHashCache.keys())) {
+      if (this.isFileInCurrentScope(filePath, roots)) {
+        this.fileHashCache.delete(filePath);
+      }
+    }
+    this.saveFileHashCache();
+  }
+
+  private replaceScopedFileHashCache(currentFileHashes: Map<string, string>, roots: string[]): void {
+    for (const filePath of Array.from(this.fileHashCache.keys())) {
+      if (this.isFileInCurrentScope(filePath, roots)) {
+        this.fileHashCache.delete(filePath);
+      }
+    }
+
+    for (const [filePath, hash] of currentFileHashes) {
+      this.fileHashCache.set(filePath, hash);
+    }
+
+    this.saveFileHashCache();
+  }
+
+  private partitionFailedBatches(roots: string[]): { scoped: FailedBatch[]; retained: FailedBatch[] } {
+    const scoped: FailedBatch[] = [];
+    const retained: FailedBatch[] = [];
+
+    for (const batch of this.loadFailedBatches()) {
+      const scopedChunks = batch.chunks.filter((chunk) => this.isFileInCurrentScope(chunk.metadata.filePath, roots));
+      const retainedChunks = batch.chunks.filter((chunk) => !this.isFileInCurrentScope(chunk.metadata.filePath, roots));
+
+      if (scopedChunks.length > 0) {
+        scoped.push({ ...batch, chunks: scopedChunks });
+      }
+
+      if (retainedChunks.length > 0) {
+        retained.push({ ...batch, chunks: retainedChunks });
+      }
+    }
+
+    return { scoped, retained };
+  }
+
+  private clearScopedFailedBatches(roots: string[]): void {
+    const { retained: retainedBatches } = this.partitionFailedBatches(roots);
+    this.saveFailedBatches(retainedBatches);
+  }
+
+  private saveScopedFailedBatches(batches: FailedBatch[], roots: string[]): void {
+    const { retained } = this.partitionFailedBatches(roots);
+    this.saveFailedBatches([...retained, ...batches]);
+  }
+
+  private clearSharedIndexProjectData(
+    store: VectorStore,
+    invertedIndex: InvertedIndex,
+    database: Database,
+    roots: string[]
+  ): { removedChunkIds: string[]; hasForeignData: boolean } {
+    const allMetadata = store.getAllMetadata();
+    const scopedEntries = allMetadata.filter(({ metadata }) => this.isFileInCurrentScope(metadata.filePath, roots));
+    const removedChunkIds = scopedEntries.map(({ key }) => key);
+    const filePaths = new Set<string>([
+      ...Array.from(this.fileHashCache.keys()).filter((filePath) => this.isFileInCurrentScope(filePath, roots)),
+      ...scopedEntries.map(({ metadata }) => metadata.filePath),
+    ]);
+
+    for (const chunkId of removedChunkIds) {
+      store.remove(chunkId);
+      invertedIndex.removeChunk(chunkId);
+    }
+
+    database.deleteBranchChunksByChunkIds(removedChunkIds);
+
+    const symbolIds: string[] = [];
+    for (const filePath of filePaths) {
+      for (const symbol of database.getSymbolsByFile(filePath)) {
+        symbolIds.push(symbol.id);
+      }
+    }
+
+    database.clearCallEdgeTargetsForSymbols(symbolIds);
+    database.deleteBranchSymbolsBySymbolIds(symbolIds);
+
+    for (const filePath of filePaths) {
+      database.deleteCallEdgesByFile(filePath);
+      database.deleteSymbolsByFile(filePath);
+      database.deleteChunksByFile(filePath);
+    }
+
+    database.gcOrphanCallEdges();
+    database.gcOrphanSymbols();
+    database.gcOrphanEmbeddings();
+    database.gcOrphanChunks();
+
+    store.save();
+    invertedIndex.save();
+
+    return {
+      removedChunkIds,
+      hasForeignData: allMetadata.some(({ metadata }) => !this.isFileInCurrentScope(metadata.filePath, roots)),
+    };
+  }
+
   private checkForInterruptedIndexing(): boolean {
     return existsSync(this.indexingLockPath);
   }
@@ -2079,6 +2213,8 @@ export class Indexer {
 
   async index(onProgress?: ProgressCallback): Promise<IndexStats> {
     const { store, provider, invertedIndex, database, configuredProviderInfo } = await this.ensureInitialized();
+    const scopedRoots = this.config.scope === "global" ? this.getScopedRoots() : null;
+    const branchCatalogKey = this.getBranchCatalogKey();
 
     if (!this.indexCompatibility?.compatible) {
       throw new Error(
@@ -2177,6 +2313,9 @@ export class Indexer {
     const existingChunks = new Map<string, string>();
     const existingChunksByFile = new Map<string, Set<string>>();
     for (const { key, metadata } of store.getAllMetadata()) {
+      if (scopedRoots && !this.isFileInCurrentScope(metadata.filePath, scopedRoots)) {
+        continue;
+      }
       existingChunks.set(key, metadata.hash);
       const fileChunks = existingChunksByFile.get(metadata.filePath) || new Set();
       fileChunks.add(key);
@@ -2400,13 +2539,18 @@ export class Indexer {
     });
 
     if (pendingChunks.length === 0 && removedCount === 0) {
-      database.clearBranch(this.currentBranch);
-      database.addChunksToBranchBatch(this.currentBranch, Array.from(currentChunkIds));
-      database.clearBranchSymbols(this.currentBranch);
-      database.addSymbolsToBranchBatch(this.currentBranch, Array.from(allSymbolIds));
-      this.fileHashCache = currentFileHashes;
-      this.saveFileHashCache();
-      this.saveFailedBatches([]);
+      database.clearBranch(branchCatalogKey);
+      database.addChunksToBranchBatch(branchCatalogKey, Array.from(currentChunkIds));
+      database.clearBranchSymbols(branchCatalogKey);
+      database.addSymbolsToBranchBatch(branchCatalogKey, Array.from(allSymbolIds));
+      if (scopedRoots) {
+        this.replaceScopedFileHashCache(currentFileHashes, scopedRoots);
+        this.clearScopedFailedBatches(scopedRoots);
+      } else {
+        this.fileHashCache = currentFileHashes;
+        this.saveFileHashCache();
+        this.saveFailedBatches([]);
+      }
       stats.durationMs = Date.now() - startTime;
       onProgress?.({
         phase: "complete",
@@ -2420,15 +2564,20 @@ export class Indexer {
     }
 
     if (pendingChunks.length === 0) {
-      database.clearBranch(this.currentBranch);
-      database.addChunksToBranchBatch(this.currentBranch, Array.from(currentChunkIds));
-      database.clearBranchSymbols(this.currentBranch);
-      database.addSymbolsToBranchBatch(this.currentBranch, Array.from(allSymbolIds));
+      database.clearBranch(branchCatalogKey);
+      database.addChunksToBranchBatch(branchCatalogKey, Array.from(currentChunkIds));
+      database.clearBranchSymbols(branchCatalogKey);
+      database.addSymbolsToBranchBatch(branchCatalogKey, Array.from(allSymbolIds));
       store.save();
       invertedIndex.save();
-      this.fileHashCache = currentFileHashes;
-      this.saveFileHashCache();
-      this.saveFailedBatches([]);
+      if (scopedRoots) {
+        this.replaceScopedFileHashCache(currentFileHashes, scopedRoots);
+        this.clearScopedFailedBatches(scopedRoots);
+      } else {
+        this.fileHashCache = currentFileHashes;
+        this.saveFileHashCache();
+        this.saveFailedBatches([]);
+      }
       stats.durationMs = Date.now() - startTime;
       onProgress?.({
         phase: "complete",
@@ -2578,7 +2727,11 @@ export class Indexer {
     }
 
     await queue.onIdle();
-    this.saveFailedBatches(failedBatchesForCurrentRun);
+    if (scopedRoots) {
+      this.saveScopedFailedBatches(failedBatchesForCurrentRun, scopedRoots);
+    } else {
+      this.saveFailedBatches(failedBatchesForCurrentRun);
+    }
 
     onProgress?.({
       phase: "storing",
@@ -2588,15 +2741,19 @@ export class Indexer {
       totalChunks: pendingChunks.length,
     });
 
-    database.clearBranch(this.currentBranch);
-    database.addChunksToBranchBatch(this.currentBranch, Array.from(currentChunkIds));
-    database.clearBranchSymbols(this.currentBranch);
-    database.addSymbolsToBranchBatch(this.currentBranch, Array.from(allSymbolIds));
+    database.clearBranch(branchCatalogKey);
+    database.addChunksToBranchBatch(branchCatalogKey, Array.from(currentChunkIds));
+    database.clearBranchSymbols(branchCatalogKey);
+    database.addSymbolsToBranchBatch(branchCatalogKey, Array.from(allSymbolIds));
 
     store.save();
     invertedIndex.save();
-    this.fileHashCache = currentFileHashes;
-    this.saveFileHashCache();
+    if (scopedRoots) {
+      this.replaceScopedFileHashCache(currentFileHashes, scopedRoots);
+    } else {
+      this.fileHashCache = currentFileHashes;
+      this.saveFileHashCache();
+    }
 
     // Auto-GC after indexing: check if orphan count exceeds threshold
     if (this.config.indexing.autoGc && stats.removedChunks > 0) {
@@ -2784,8 +2941,8 @@ export class Indexer {
     const keywordMs = performance.now() - keywordStartTime;
 
     let branchChunkIds: Set<string> | null = null;
-    if (filterByBranch && this.currentBranch !== "default") {
-      branchChunkIds = new Set(database.getBranchChunkIds(this.currentBranch));
+    if (filterByBranch && (this.config.scope === "global" || this.currentBranch !== "default")) {
+      branchChunkIds = new Set(database.getBranchChunkIds(this.getBranchCatalogKey()));
     }
 
     const prefilterStartTime = performance.now();
@@ -3019,6 +3176,53 @@ export class Indexer {
   async clearIndex(): Promise<void> {
     const { store, invertedIndex, database } = await this.ensureInitialized();
 
+    if (this.config.scope === "global") {
+      store.load();
+      invertedIndex.load();
+      const roots = this.getScopedRoots();
+      const compatibility = this.checkCompatibility();
+      const allMetadata = store.getAllMetadata();
+      const hasForeignData = allMetadata.some(({ metadata }) => !this.isFileInCurrentScope(metadata.filePath, roots));
+
+      if (!compatibility.compatible && hasForeignData) {
+        throw new Error(
+          `Global index compatibility reset is unsafe because the shared index contains files from other projects. ` +
+          `The current global index cannot be force-rebuilt for ${this.projectRoot} without deleting other repositories' indexed data. ` +
+          `Use scope="project" for isolated rebuilds, or manually delete the shared global index if you intend to rebuild all projects.`
+        );
+      }
+
+      if (!hasForeignData) {
+        store.clear();
+        store.save();
+        invertedIndex.clear();
+        invertedIndex.save();
+
+        this.fileHashCache.clear();
+        this.saveFileHashCache();
+
+        database.clearAllIndexedData();
+        this.saveFailedBatches([]);
+
+        database.deleteMetadata("index.version");
+        database.deleteMetadata("index.embeddingProvider");
+        database.deleteMetadata("index.embeddingModel");
+        database.deleteMetadata("index.embeddingDimensions");
+        database.deleteMetadata("index.createdAt");
+        database.deleteMetadata("index.updatedAt");
+
+        this.indexCompatibility = this.validateIndexCompatibility(this.configuredProviderInfo!);
+        return;
+      }
+
+      this.loadFileHashCache();
+      this.clearSharedIndexProjectData(store, invertedIndex, database, roots);
+      this.clearScopedFileHashCache(roots);
+      this.clearScopedFailedBatches(roots);
+      this.indexCompatibility = compatibility;
+      return;
+    }
+
     store.clear();
     store.save();
     invertedIndex.clear();
@@ -3028,8 +3232,8 @@ export class Indexer {
     this.fileHashCache.clear();
     this.saveFileHashCache();
 
-     // Clear persisted index data across all branches so force rebuilds
-     // cannot reuse stale chunks, symbols, or embeddings from a prior provider.
+    // Clear persisted index data across all branches so force rebuilds
+    // cannot reuse stale chunks, symbols, or embeddings from a prior provider.
     database.clearAllIndexedData();
     this.saveFailedBatches([]);
 
@@ -3100,7 +3304,11 @@ export class Indexer {
   async retryFailedBatches(): Promise<{ succeeded: number; failed: number; remaining: number }> {
     const { store, provider, invertedIndex } = await this.ensureInitialized();
 
-    const failedBatches = this.loadFailedBatches();
+    const roots = this.config.scope === "global" ? this.getScopedRoots() : null;
+    const { scoped: scopedFailedBatches, retained: retainedFailedBatches } = roots
+      ? this.partitionFailedBatches(roots)
+      : { scoped: this.loadFailedBatches(), retained: [] as FailedBatch[] };
+    const failedBatches = scopedFailedBatches;
     if (failedBatches.length === 0) {
       return { succeeded: 0, failed: 0, remaining: 0 };
     }
@@ -3151,7 +3359,11 @@ export class Indexer {
       }
     }
 
-    this.saveFailedBatches(stillFailing);
+    if (roots) {
+      this.saveFailedBatches([...retainedFailedBatches, ...stillFailing]);
+    } else {
+      this.saveFailedBatches(stillFailing);
+    }
 
     if (succeeded > 0) {
       store.save();
@@ -3162,6 +3374,9 @@ export class Indexer {
   }
 
   getFailedBatchesCount(): number {
+    if (this.config.scope === "global") {
+      return this.partitionFailedBatches(this.getScopedRoots()).scoped.length;
+    }
     return this.loadFailedBatches().length;
   }
 
@@ -3235,8 +3450,8 @@ export class Indexer {
     const vectorMs = performance.now() - vectorStartTime;
 
     let branchChunkIds: Set<string> | null = null;
-    if (filterByBranch && this.currentBranch !== "default") {
-      branchChunkIds = new Set(database.getBranchChunkIds(this.currentBranch));
+    if (filterByBranch && (this.config.scope === "global" || this.currentBranch !== "default")) {
+      branchChunkIds = new Set(database.getBranchChunkIds(this.getBranchCatalogKey()));
     }
 
     const prefilterStartTime = performance.now();
@@ -3344,11 +3559,11 @@ export class Indexer {
 
   async getCallers(targetName: string): Promise<CallEdgeData[]> {
     const { database } = await this.ensureInitialized();
-    return database.getCallersWithContext(targetName, this.currentBranch);
+    return database.getCallersWithContext(targetName, this.getBranchCatalogKey());
   }
 
   async getCallees(symbolId: string): Promise<CallEdgeData[]> {
     const { database } = await this.ensureInitialized();
-    return database.getCallees(symbolId, this.currentBranch);
+    return database.getCallees(symbolId, this.getBranchCatalogKey());
   }
 }
