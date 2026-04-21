@@ -1513,9 +1513,18 @@ export class Indexer {
     return this.currentBranch || "default";
   }
 
+  private getLegacyMigrationMetadataKey(): string {
+    const projectHash = hashContent(path.resolve(this.projectRoot)).slice(0, 16);
+    return `index.globalBranchMigration.${projectHash}`;
+  }
+
   private getBranchCatalogKeys(): string[] {
     const primary = this.getBranchCatalogKey();
     if (this.config.scope !== "global") {
+      return [primary];
+    }
+
+    if (this.database?.getMetadata(this.getLegacyMigrationMetadataKey()) === "done") {
       return [primary];
     }
 
@@ -1573,6 +1582,15 @@ export class Indexer {
   private clearScopedFailedBatches(roots: string[]): void {
     const { retained: retainedBatches } = this.partitionFailedBatches(roots);
     this.saveFailedBatches(retainedBatches);
+  }
+
+  private hasForeignScopedFileHashData(roots: string[]): boolean {
+    return Array.from(this.fileHashCache.keys()).some((filePath) => !this.isFileInCurrentScope(filePath, roots));
+  }
+
+  private hasForeignScopedFailedBatches(roots: string[]): boolean {
+    const { retained } = this.partitionFailedBatches(roots);
+    return retained.length > 0;
   }
 
   private saveScopedFailedBatches(batches: FailedBatch[], roots: string[]): void {
@@ -2147,6 +2165,9 @@ export class Indexer {
     this.database.setMetadata("index.embeddingProvider", provider.provider);
     this.database.setMetadata("index.embeddingModel", provider.modelInfo.model);
     this.database.setMetadata("index.embeddingDimensions", provider.modelInfo.dimensions.toString());
+    if (this.config.scope === "global") {
+      this.database.setMetadata(this.getLegacyMigrationMetadataKey(), "done");
+    }
     this.database.setMetadata("index.updatedAt", now);
 
     if (!existingCreatedAt) {
@@ -2582,6 +2603,8 @@ export class Indexer {
         this.saveFileHashCache();
         this.saveFailedBatches([]);
       }
+      this.saveIndexMetadata(configuredProviderInfo);
+      this.indexCompatibility = { compatible: true };
       stats.durationMs = Date.now() - startTime;
       onProgress?.({
         phase: "complete",
@@ -2609,6 +2632,8 @@ export class Indexer {
         this.saveFileHashCache();
         this.saveFailedBatches([]);
       }
+      this.saveIndexMetadata(configuredProviderInfo);
+      this.indexCompatibility = { compatible: true };
       stats.durationMs = Date.now() - startTime;
       onProgress?.({
         phase: "complete",
@@ -2979,7 +3004,8 @@ export class Indexer {
     }
 
     const prefilterStartTime = performance.now();
-    const shouldPrefilterByBranch = branchChunkIds !== null && branchChunkIds.size > 0;
+    const shouldPrefilterByBranch = branchChunkIds !== null && (this.config.scope === "global" || branchChunkIds.size > 0);
+    const allowBranchPrefilterFallback = this.config.scope !== "global";
     const prefilteredSemantic = shouldPrefilterByBranch && branchChunkIds
       ? semanticResults.filter((r) => branchChunkIds.has(r.id))
       : semanticResults;
@@ -2987,27 +3013,27 @@ export class Indexer {
       ? keywordResults.filter((r) => branchChunkIds.has(r.id))
       : keywordResults;
 
-    const semanticCandidates = (shouldPrefilterByBranch && semanticResults.length > 0 && prefilteredSemantic.length === 0)
+    const semanticCandidates = (allowBranchPrefilterFallback && shouldPrefilterByBranch && semanticResults.length > 0 && prefilteredSemantic.length === 0)
       ? semanticResults
       : prefilteredSemantic;
-    const keywordCandidates = (shouldPrefilterByBranch && keywordResults.length > 0 && prefilteredKeyword.length === 0)
+    const keywordCandidates = (allowBranchPrefilterFallback && shouldPrefilterByBranch && keywordResults.length > 0 && prefilteredKeyword.length === 0)
       ? keywordResults
       : prefilteredKeyword;
     const prefilterMs = performance.now() - prefilterStartTime;
 
-    if (branchChunkIds && branchChunkIds.size === 0) {
+    if (this.config.scope !== "global" && branchChunkIds && branchChunkIds.size === 0) {
       this.logger.search("warn", "Branch prefilter skipped because branch catalog is empty", {
         branch: this.currentBranch,
       });
     }
 
-    if (shouldPrefilterByBranch && semanticResults.length > 0 && prefilteredSemantic.length === 0) {
+    if (allowBranchPrefilterFallback && shouldPrefilterByBranch && semanticResults.length > 0 && prefilteredSemantic.length === 0) {
       this.logger.search("warn", "Branch prefilter produced no semantic overlap, using unfiltered semantic candidates", {
         branch: this.currentBranch,
       });
     }
 
-    if (shouldPrefilterByBranch && keywordResults.length > 0 && prefilteredKeyword.length === 0) {
+    if (allowBranchPrefilterFallback && shouldPrefilterByBranch && keywordResults.length > 0 && prefilteredKeyword.length === 0) {
       this.logger.search("warn", "Branch prefilter produced no keyword overlap, using unfiltered keyword candidates", {
         branch: this.currentBranch,
       });
@@ -3212,10 +3238,14 @@ export class Indexer {
     if (this.config.scope === "global") {
       store.load();
       invertedIndex.load();
+      this.loadFileHashCache();
       const roots = this.getScopedRoots();
       const compatibility = this.checkCompatibility();
       const allMetadata = store.getAllMetadata();
-      const hasForeignData = allMetadata.some(({ metadata }) => !this.isFileInCurrentScope(metadata.filePath, roots));
+      const hasForeignData =
+        allMetadata.some(({ metadata }) => !this.isFileInCurrentScope(metadata.filePath, roots)) ||
+        this.hasForeignScopedFileHashData(roots) ||
+        this.hasForeignScopedFailedBatches(roots);
 
       if (!compatibility.compatible && hasForeignData) {
         throw new Error(
@@ -3241,6 +3271,7 @@ export class Indexer {
         database.deleteMetadata("index.embeddingProvider");
         database.deleteMetadata("index.embeddingModel");
         database.deleteMetadata("index.embeddingDimensions");
+        database.deleteMetadata(this.getLegacyMigrationMetadataKey());
         database.deleteMetadata("index.createdAt");
         database.deleteMetadata("index.updatedAt");
 
@@ -3248,7 +3279,6 @@ export class Indexer {
         return;
       }
 
-      this.loadFileHashCache();
       this.clearSharedIndexProjectData(store, invertedIndex, database, roots);
       this.clearScopedFileHashCache(roots);
       this.clearScopedFailedBatches(roots);
@@ -3275,6 +3305,7 @@ export class Indexer {
     database.deleteMetadata("index.embeddingProvider");
     database.deleteMetadata("index.embeddingModel");
     database.deleteMetadata("index.embeddingDimensions");
+    database.deleteMetadata(this.getLegacyMigrationMetadataKey());
     database.deleteMetadata("index.createdAt");
     database.deleteMetadata("index.updatedAt");
 
@@ -3490,22 +3521,23 @@ export class Indexer {
     }
 
     const prefilterStartTime = performance.now();
-    const shouldPrefilterByBranch = branchChunkIds !== null && branchChunkIds.size > 0;
+    const shouldPrefilterByBranch = branchChunkIds !== null && (this.config.scope === "global" || branchChunkIds.size > 0);
+    const allowBranchPrefilterFallback = this.config.scope !== "global";
     const prefilteredSemantic = shouldPrefilterByBranch && branchChunkIds
       ? semanticResults.filter((r) => branchChunkIds.has(r.id))
       : semanticResults;
-    const semanticCandidates = (shouldPrefilterByBranch && semanticResults.length > 0 && prefilteredSemantic.length === 0)
+    const semanticCandidates = (allowBranchPrefilterFallback && shouldPrefilterByBranch && semanticResults.length > 0 && prefilteredSemantic.length === 0)
       ? semanticResults
       : prefilteredSemantic;
     const prefilterMs = performance.now() - prefilterStartTime;
 
-    if (branchChunkIds && branchChunkIds.size === 0) {
+    if (this.config.scope !== "global" && branchChunkIds && branchChunkIds.size === 0) {
       this.logger.search("warn", "Branch prefilter skipped because branch catalog is empty", {
         branch: this.currentBranch,
       });
     }
 
-    if (shouldPrefilterByBranch && semanticResults.length > 0 && prefilteredSemantic.length === 0) {
+    if (allowBranchPrefilterFallback && shouldPrefilterByBranch && semanticResults.length > 0 && prefilteredSemantic.length === 0) {
       this.logger.search("warn", "Branch prefilter produced no semantic overlap, using unfiltered semantic candidates", {
         branch: this.currentBranch,
       });
