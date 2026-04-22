@@ -40,6 +40,25 @@ function resolveCommonGitDir(gitDir: string): string {
   return gitDir;
 }
 
+export function resolveWorktreeMainRepoRoot(repoRoot: string): string | null {
+  const gitDir = resolveGitDir(repoRoot);
+  if (!gitDir) {
+    return null;
+  }
+
+  const commonGitDir = resolveCommonGitDir(gitDir);
+  if (commonGitDir === gitDir || path.basename(commonGitDir) !== ".git") {
+    return null;
+  }
+
+  const mainRepoRoot = path.dirname(commonGitDir);
+  if (!existsSync(mainRepoRoot)) {
+    return null;
+  }
+
+  return path.resolve(mainRepoRoot) === path.resolve(repoRoot) ? null : mainRepoRoot;
+}
+
 function tryResolveRefCommit(gitDir: string, refPath: string): string | null {
   const looseRefPath = path.join(gitDir, refPath);
   if (existsSync(looseRefPath)) {

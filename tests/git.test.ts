@@ -11,6 +11,7 @@ import {
   getBranchOrDefault,
   getHeadPath,
   resolveGitDir,
+  resolveWorktreeMainRepoRoot,
 } from "../src/git/index.js";
 
 describe("git utilities", () => {
@@ -272,8 +273,19 @@ describe("git utilities", () => {
       expect(getHeadPath(worktreeDir)).toBe(path.join(worktreeGitDir, "HEAD"));
     });
 
+    it("resolveWorktreeMainRepoRoot should return the main repo root", () => {
+      expect(resolveWorktreeMainRepoRoot(worktreeDir)).toBe(mainRepoDir);
+    });
+
     it("getBranchOrDefault should work in worktree", () => {
       expect(getBranchOrDefault(worktreeDir)).toBe("feature/x/y");
+    });
+  });
+
+  describe("resolveWorktreeMainRepoRoot", () => {
+    it("should return null for a normal repo", () => {
+      fs.mkdirSync(path.join(tempDir, ".git"));
+      expect(resolveWorktreeMainRepoRoot(tempDir)).toBe(null);
     });
   });
 });
