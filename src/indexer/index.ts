@@ -3290,6 +3290,14 @@ export class Indexer {
       return;
     }
 
+    const localProjectIndexPath = path.join(this.projectRoot, ".opencode", "index");
+    if (path.resolve(this.indexPath) !== path.resolve(localProjectIndexPath)) {
+      throw new Error(
+        "Project-scoped force rebuild is unsafe while using an inherited worktree index. " +
+        "Create a local project config boundary before clearing the index."
+      );
+    }
+
     store.clear();
     store.save();
     invertedIndex.clear();

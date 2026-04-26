@@ -68,7 +68,7 @@ describe("worktree fallback (issue #60)", () => {
     expect(configPath).toBe(path.join(mainRepoDir, ".opencode", "codebase-index.json"));
     expect(loaded.scope).toBe("project");
     expect(loaded.additionalInclude).toEqual(["docs/**/*.md"]);
-    expect(loaded.knowledgeBases).toEqual([path.join("..", "main-repo", "docs", "reference")]);
+    expect(loaded.knowledgeBases).toEqual(["docs/reference"]);
   });
 
   it("resolves the project index path to the main repo when the worktree has no local index", async () => {
