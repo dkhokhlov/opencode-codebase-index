@@ -1,13 +1,17 @@
 import { existsSync } from "fs";
+import { mkdirSync } from "fs";
 import { readFileSync } from "fs";
 import { rmSync } from "fs";
+import { writeFileSync } from "fs";
 import * as os from "os";
 import * as path from "path";
 import { performance } from "perf_hooks";
 
+import { rebasePathEntries, resolveInheritedKnowledgeBaseEntries } from "../config/merger.js";
 import { parseConfig } from "../config/schema.js";
 import type { SearchConfig as ConfigSearchConfig } from "../config/schema.js";
 import { getDefaultModelForProvider } from "../config/index.js";
+import { getGlobalIndexPath, resolveProjectConfigPath, resolveProjectIndexPath } from "../config/paths.js";
 import { Indexer } from "../indexer/index.js";
 
 import { evaluateBudgetGate } from "./budget.js";
@@ -37,15 +41,56 @@ function toAbsolute(projectRoot: string, maybeRelative: string): string {
   return path.isAbsolute(maybeRelative) ? maybeRelative : path.join(projectRoot, maybeRelative);
 }
 
+function isProjectScopedConfigPath(configPath: string): boolean {
+  return path.basename(configPath) === "codebase-index.json"
+    && path.basename(path.dirname(configPath)) === ".opencode";
+}
+
+function normalizeEvalConfigKnowledgeBases(
+  rawConfig: unknown,
+  projectRoot: string,
+  resolvedConfigPath: string,
+): Record<string, unknown> {
+  const config = rawConfig && typeof rawConfig === "object"
+    ? { ...(rawConfig as Record<string, unknown>) }
+    : {};
+
+  if (!Array.isArray(config.knowledgeBases)) {
+    return config;
+  }
+
+  config.knowledgeBases = isProjectScopedConfigPath(resolvedConfigPath)
+    ? resolveInheritedKnowledgeBaseEntries(
+        config.knowledgeBases,
+        path.dirname(path.dirname(resolvedConfigPath)),
+        projectRoot,
+      )
+    : rebasePathEntries(
+        config.knowledgeBases,
+        path.dirname(resolvedConfigPath),
+        projectRoot,
+      );
+
+  return config;
+}
+
 function loadRawConfig(projectRoot: string, configPath?: string): unknown {
   const fromPath = configPath ? toAbsolute(projectRoot, configPath) : null;
   if (fromPath && existsSync(fromPath)) {
-    return JSON.parse(readFileSync(fromPath, "utf-8"));
+    return normalizeEvalConfigKnowledgeBases(
+      JSON.parse(readFileSync(fromPath, "utf-8")),
+      projectRoot,
+      fromPath,
+    );
   }
 
-  const projectConfig = path.join(projectRoot, ".opencode", "codebase-index.json");
+  const projectConfig = resolveProjectConfigPath(projectRoot);
   if (existsSync(projectConfig)) {
-    return JSON.parse(readFileSync(projectConfig, "utf-8"));
+    return normalizeEvalConfigKnowledgeBases(
+      JSON.parse(readFileSync(projectConfig, "utf-8")),
+      projectRoot,
+      projectConfig,
+    );
   }
 
   const globalConfig = path.join(os.homedir(), ".config", "opencode", "codebase-index.json");
@@ -57,17 +102,51 @@ function loadRawConfig(projectRoot: string, configPath?: string): unknown {
 }
 
 function getIndexRootPath(projectRoot: string, scope: "project" | "global"): string {
-  if (scope === "global") {
-    return path.join(os.homedir(), ".opencode", "global-index");
-  }
+  return scope === "global"
+    ? getGlobalIndexPath()
+    : resolveProjectIndexPath(projectRoot, scope);
+}
+
+function getLocalProjectIndexRoot(projectRoot: string): string {
   return path.join(projectRoot, ".opencode", "index");
 }
 
+function getLocalProjectConfigPath(projectRoot: string): string {
+  return path.join(projectRoot, ".opencode", "codebase-index.json");
+}
+
 function clearIndexRoot(projectRoot: string, scope: "project" | "global"): void {
-  const indexRoot = getIndexRootPath(projectRoot, scope);
+  const indexRoot = scope === "global"
+    ? getIndexRootPath(projectRoot, scope)
+    : getLocalProjectIndexRoot(projectRoot);
   if (existsSync(indexRoot)) {
     rmSync(indexRoot, { recursive: true, force: true });
   }
+}
+
+function ensureLocalEvalProjectConfig(projectRoot: string, configPath?: string): string | undefined {
+  const localConfigPath = getLocalProjectConfigPath(projectRoot);
+  const resolvedConfigPath = configPath
+    ? toAbsolute(projectRoot, configPath)
+    : resolveProjectConfigPath(projectRoot);
+
+  if (!configPath && existsSync(localConfigPath)) {
+    return localConfigPath;
+  }
+
+  if (!existsSync(resolvedConfigPath) || resolvedConfigPath === localConfigPath) {
+    return resolvedConfigPath;
+  }
+
+  const sourceConfig = normalizeEvalConfigKnowledgeBases(
+    JSON.parse(readFileSync(resolvedConfigPath, "utf-8")),
+    projectRoot,
+    resolvedConfigPath,
+  );
+
+  mkdirSync(path.dirname(localConfigPath), { recursive: true });
+  writeFileSync(localConfigPath, JSON.stringify(sourceConfig, null, 2), "utf-8");
+  return localConfigPath;
 }
 
 function loadParsedConfig(projectRoot: string, configPath?: string) {
@@ -116,7 +195,12 @@ export async function runEvaluation(options: EvalRunOptions): Promise<EvalRunRes
   const budgetPath = options.budgetPath ? toAbsolute(options.projectRoot, options.budgetPath) : undefined;
 
   const dataset = loadGoldenDataset(datasetPath);
-  const parsedConfig = loadParsedConfig(options.projectRoot, options.configPath);
+
+  const resolvedEvalConfigPath = options.reindex
+    ? ensureLocalEvalProjectConfig(options.projectRoot, options.configPath)
+    : options.configPath;
+
+  const parsedConfig = loadParsedConfig(options.projectRoot, resolvedEvalConfigPath);
   const effectiveConfig = resolveSearchConfig(parsedConfig, options.searchOverrides);
 
   if (options.reindex) {

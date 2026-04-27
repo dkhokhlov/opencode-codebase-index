@@ -4,6 +4,7 @@ import * as path from "path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { loadMergedConfig } from "../src/config/merger.js";
 import { parseConfig } from "../src/config/schema.js";
 import { Indexer } from "../src/indexer/index.js";
 import { Database } from "../src/native/index.js";
@@ -124,6 +125,52 @@ describe("indexer clearIndex force rebuild", () => {
     expect(embeddingBuffer).not.toBeNull();
     const floatCount = embeddingBuffer!.byteLength / Float32Array.BYTES_PER_ELEMENT;
     expect(floatCount).toBe(4);
+  });
+
+  it("rejects force clearing an inherited project index from a fresh worktree", async () => {
+    const mainRepoDir = path.join(tempDir, "main-repo");
+    const worktreeDir = path.join(tempDir, "worktree-feature");
+    const worktreeGitDir = path.join(mainRepoDir, ".git", "worktrees", "feature");
+    const mainSourceFile = path.join(mainRepoDir, "src", "index.ts");
+
+    fs.mkdirSync(path.join(mainRepoDir, ".git", "refs", "heads"), { recursive: true });
+    fs.mkdirSync(path.join(mainRepoDir, ".opencode", "index"), { recursive: true });
+    fs.mkdirSync(path.dirname(mainSourceFile), { recursive: true });
+    fs.mkdirSync(worktreeGitDir, { recursive: true });
+    fs.mkdirSync(worktreeDir, { recursive: true });
+
+    fs.writeFileSync(path.join(mainRepoDir, ".git", "HEAD"), "ref: refs/heads/main\n");
+    fs.writeFileSync(path.join(mainRepoDir, ".git", "refs", "heads", "main"), "1111111111111111111111111111111111111111\n");
+    fs.writeFileSync(path.join(worktreeDir, ".git"), `gitdir: ${worktreeGitDir}\n`);
+    fs.writeFileSync(path.join(worktreeGitDir, "HEAD"), "ref: refs/heads/feature\n");
+    fs.writeFileSync(path.join(worktreeGitDir, "commondir"), "../..\n");
+
+    fs.writeFileSync(
+      path.join(mainRepoDir, ".opencode", "codebase-index.json"),
+      JSON.stringify({
+        embeddingProvider: "custom",
+        customProvider: {
+          baseUrl: "http://localhost:11434/v1",
+          model: "mock-8d",
+          dimensions: 8,
+        },
+        indexing: {
+          watchFiles: false,
+          retries: 0,
+          retryDelayMs: 1,
+        },
+      }, null, 2),
+      "utf-8"
+    );
+    fs.writeFileSync(mainSourceFile, "export function alpha() { return 'a'; }\n", "utf-8");
+
+    embeddingDimensions = 8;
+    await createIndexer(mainRepoDir, 8).index();
+
+    const inheritedIndexer = new Indexer(worktreeDir, parseConfig(loadMergedConfig(worktreeDir)));
+    await expect(inheritedIndexer.clearIndex()).rejects.toThrow(
+      "Project-scoped force rebuild is unsafe while using an inherited worktree index"
+    );
   });
 
   it("clears only the current project from a shared global index when compatibility is unchanged", async () => {

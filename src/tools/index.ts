@@ -18,7 +18,9 @@ import {
 } from "./utils.js";
 import { existsSync, writeFileSync, mkdirSync, statSync } from "fs";
 import * as path from "path";
-import { loadMergedConfig } from "../config/merger.js";
+import { loadMergedConfig, loadProjectConfigLayer, materializeLocalProjectConfig } from "../config/merger.js";
+import { resolveWritableProjectConfigPath } from "../config/paths.js";
+import { resolveWorktreeMainRepoRoot } from "../git/index.js";
 
 const z = tool.schema;
 
@@ -39,7 +41,23 @@ function refreshIndexerFromConfig(): void {
     throw new Error("Codebase index tools not initialized. Plugin may not be loaded correctly.");
   }
 
-  sharedIndexer = new Indexer(sharedProjectRoot, parseConfig(loadConfig()));
+  sharedIndexer = new Indexer(sharedProjectRoot, parseConfig(loadRuntimeConfig()));
+}
+
+function shouldForceLocalizeProjectIndex(): boolean {
+  const currentConfig = parseConfig(loadRuntimeConfig());
+  if (currentConfig.scope !== "project") {
+    return false;
+  }
+
+  const localIndexPath = path.join(sharedProjectRoot, ".opencode", "index");
+  const mainRepoRoot = resolveWorktreeMainRepoRoot(sharedProjectRoot);
+  if (!mainRepoRoot) {
+    return false;
+  }
+
+  const inheritedIndexPath = path.join(mainRepoRoot, ".opencode", "index");
+  return !existsSync(localIndexPath) && existsSync(inheritedIndexPath);
 }
 
 function getIndexer(): Indexer {
@@ -50,43 +68,92 @@ function getIndexer(): Indexer {
 }
 
 function getConfigPath(): string {
-  return path.join(sharedProjectRoot, ".opencode", "codebase-index.json");
+  return resolveWritableProjectConfigPath(sharedProjectRoot);
 }
 
-function loadConfig(): Record<string, unknown> {
+function normalizeConfigPathValue(value: string, baseDir: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  const absolutePath = path.isAbsolute(trimmed) ? trimmed : path.resolve(baseDir, trimmed);
+  return path.normalize(absolutePath);
+}
+
+function serializeConfigPathValue(value: string, baseDir: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  if (!path.isAbsolute(trimmed)) {
+    return path.normalize(trimmed);
+  }
+
+  const relativePath = path.relative(baseDir, trimmed);
+  if (!relativePath || (!relativePath.startsWith("..") && !path.isAbsolute(relativePath))) {
+    return path.normalize(relativePath || ".");
+  }
+
+  return path.normalize(trimmed);
+}
+
+function normalizeKnowledgeBasePaths(config: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...config };
+
+  if (Array.isArray(normalized.knowledgeBases)) {
+    normalized.knowledgeBases = (normalized.knowledgeBases as string[]).map(kb => {
+      return normalizeConfigPathValue(kb, sharedProjectRoot);
+    });
+  }
+
+  return normalized;
+}
+
+function loadRuntimeConfig(): Record<string, unknown> {
   const rawConfig = loadMergedConfig(sharedProjectRoot);
   const config: Record<string, unknown> = {};
-  
+
   if (rawConfig && typeof rawConfig === "object") {
     for (const key of Object.keys(rawConfig)) {
       config[key] = rawConfig[key as keyof typeof rawConfig];
     }
   }
-  
-  if (Array.isArray(config.knowledgeBases)) {
-    config.knowledgeBases = (config.knowledgeBases as string[]).map(kb => {
-      const resolved = path.isAbsolute(kb) ? kb : path.resolve(sharedProjectRoot, kb);
-      return path.normalize(resolved);
-    });
+
+  return normalizeKnowledgeBasePaths(config);
+}
+
+function loadEditableConfig(): Record<string, unknown> {
+  const rawConfig = loadProjectConfigLayer(sharedProjectRoot);
+  const config: Record<string, unknown> = {};
+
+  if (rawConfig && typeof rawConfig === "object") {
+    for (const key of Object.keys(rawConfig)) {
+      config[key] = rawConfig[key as keyof typeof rawConfig];
+    }
   }
-  
-  if (Array.isArray(config.additionalInclude)) {
-    config.additionalInclude = (config.additionalInclude as string[]).map(pattern => {
-      const resolved = path.isAbsolute(pattern) ? pattern : path.resolve(sharedProjectRoot, pattern);
-      return path.normalize(resolved);
-    });
-  }
-  
-  return config;
+
+  return normalizeKnowledgeBasePaths(config);
 }
 
 function saveConfig(config: Record<string, unknown>): void {
-  const configDir = path.join(sharedProjectRoot, ".opencode");
+  const configPath = getConfigPath();
+  const configDir = path.dirname(configPath);
+  const configBaseDir = path.dirname(configDir);
   if (!existsSync(configDir)) {
     mkdirSync(configDir, { recursive: true });
   }
-  const configPath = getConfigPath();
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+
+  const serializableConfig: Record<string, unknown> = { ...config };
+
+  if (Array.isArray(serializableConfig.knowledgeBases)) {
+    serializableConfig.knowledgeBases = (serializableConfig.knowledgeBases as string[]).map(kb =>
+      serializeConfigPathValue(kb, configBaseDir)
+    );
+  }
+
+  writeFileSync(configPath, JSON.stringify(serializableConfig, null, 2) + "\n", "utf-8");
 }
 
 export const codebase_peek: ToolDefinition = tool({
@@ -121,7 +188,7 @@ export const index_codebase: ToolDefinition = tool({
     verbose: z.boolean().optional().default(false).describe("Show detailed info about skipped files and parsing failures"),
   },
   async execute(args, context) {
-    const indexer = getIndexer();
+    let indexer = getIndexer();
 
     if (args.estimateOnly) {
       const estimate = await indexer.estimateCost();
@@ -129,6 +196,11 @@ export const index_codebase: ToolDefinition = tool({
     }
 
     if (args.force) {
+      if (shouldForceLocalizeProjectIndex()) {
+        materializeLocalProjectConfig(sharedProjectRoot, loadProjectConfigLayer(sharedProjectRoot));
+        refreshIndexerFromConfig();
+        indexer = getIndexer();
+      }
       await indexer.clearIndex();
     }
 
@@ -365,7 +437,7 @@ export const add_knowledge_base: ToolDefinition = tool({
     }
 
     // Load current config
-    const config = loadConfig();
+    const config = loadEditableConfig();
     const knowledgeBases: string[] = Array.isArray(config.knowledgeBases)
       ? config.knowledgeBases as string[]
       : [];
@@ -400,7 +472,7 @@ export const list_knowledge_bases: ToolDefinition = tool({
     "List all configured knowledge base folders that are indexed alongside the main project.",
   args: {},
   async execute() {
-    const config = loadConfig();
+    const config = loadRuntimeConfig();
     const knowledgeBases: string[] = Array.isArray(config.knowledgeBases)
       ? config.knowledgeBases as string[]
       : [];
@@ -443,7 +515,7 @@ export const remove_knowledge_base: ToolDefinition = tool({
     const inputPath = args.path.trim();
 
     // Load current config
-    const config = loadConfig();
+    const config = loadEditableConfig();
     const knowledgeBases: string[] = Array.isArray(config.knowledgeBases)
       ? config.knowledgeBases as string[]
       : [];

@@ -1,11 +1,15 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import * as path from "path";
+import { existsSync } from "fs";
 
 import { Indexer } from "./indexer/index.js";
 import type { ParsedCodebaseIndexConfig, LogLevel } from "./config/schema.js";
+import { loadProjectConfigLayer, materializeLocalProjectConfig } from "./config/merger.js";
 import { formatDefinitionLookup, formatHealthCheck, formatIndexStats, formatStatus } from "./tools/utils.js";
 import { formatCostEstimate } from "./utils/cost.js";
 import type { LogEntry } from "./utils/logger.js";
+import { resolveWorktreeMainRepoRoot } from "./git/index.js";
 
 const MAX_CONTENT_LINES = 30;
 
@@ -29,8 +33,29 @@ export function createMcpServer(projectRoot: string, config: ParsedCodebaseIndex
     version: "0.5.1",
   });
 
-  const indexer = new Indexer(projectRoot, config);
+  const runtimeConfig = config;
+  let indexer = new Indexer(projectRoot, runtimeConfig);
   let initialized = false;
+
+  function refreshIndexerFromConfig(): void {
+    indexer = new Indexer(projectRoot, runtimeConfig);
+    initialized = false;
+  }
+
+  function shouldForceLocalizeProjectIndex(): boolean {
+    if (runtimeConfig.scope !== "project") {
+      return false;
+    }
+
+    const localIndexPath = path.join(projectRoot, ".opencode", "index");
+    const mainRepoRoot = resolveWorktreeMainRepoRoot(projectRoot);
+    if (!mainRepoRoot) {
+      return false;
+    }
+
+    const inheritedIndexPath = path.join(mainRepoRoot, ".opencode", "index");
+    return !existsSync(localIndexPath) && existsSync(inheritedIndexPath);
+  }
 
   async function ensureInitialized(): Promise<void> {
     if (!initialized) {
@@ -118,15 +143,23 @@ export function createMcpServer(projectRoot: string, config: ParsedCodebaseIndex
       verbose: z.boolean().optional().default(false).describe("Show detailed info about skipped files and parsing failures"),
     },
     async (args) => {
-      await ensureInitialized();
-
       if (args.estimateOnly) {
+        await ensureInitialized();
         const estimate = await indexer.estimateCost();
         return { content: [{ type: "text", text: formatCostEstimate(estimate) }] };
       }
 
       if (args.force) {
+        if (shouldForceLocalizeProjectIndex()) {
+          materializeLocalProjectConfig(projectRoot, loadProjectConfigLayer(projectRoot));
+          refreshIndexerFromConfig();
+        }
+        await ensureInitialized();
         await indexer.clearIndex();
+        refreshIndexerFromConfig();
+        await ensureInitialized();
+      } else {
+        await ensureInitialized();
       }
 
       const stats = await indexer.index();
