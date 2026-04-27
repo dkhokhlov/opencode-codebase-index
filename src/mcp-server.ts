@@ -33,7 +33,7 @@ export function createMcpServer(projectRoot: string, config: ParsedCodebaseIndex
     version: "0.5.1",
   });
 
-  let runtimeConfig = config;
+  const runtimeConfig = config;
   let indexer = new Indexer(projectRoot, runtimeConfig);
   let initialized = false;
 
