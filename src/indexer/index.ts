@@ -236,6 +236,7 @@ interface IndexMetadata {
   embeddingProvider: string;
   embeddingModel: string;
   embeddingDimensions: number;
+  embeddingStrategyVersion: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -243,6 +244,7 @@ interface IndexMetadata {
 enum IncompatibilityCode {
   DIMENSION_MISMATCH = "DIMENSION_MISMATCH",
   MODEL_MISMATCH = "MODEL_MISMATCH",
+  EMBEDDING_STRATEGY_MISMATCH = "EMBEDDING_STRATEGY_MISMATCH",
 }
 
 interface IndexCompatibility {
@@ -253,6 +255,7 @@ interface IndexCompatibility {
 }
 
 const INDEX_METADATA_VERSION = "1";
+const EMBEDDING_STRATEGY_VERSION = "2";
 const RANKING_TOKEN_CACHE_LIMIT = 4096;
 
 function createPendingChunkStorageText(texts: PendingChunk["texts"]): string {
@@ -301,10 +304,29 @@ function normalizePendingChunk(rawChunk: unknown): PendingChunk | null {
     : [];
 
   if (texts.length === 0 && typeof chunk.text === "string") {
-    texts.push({
-      text: chunk.text,
-      tokenCount: estimateTokens(chunk.text),
-    });
+    if (typeof chunk.content === "string" && chunk.content.length > 0 && chunk.metadata && typeof chunk.metadata === "object") {
+      const metadata = chunk.metadata as Partial<ChunkMetadata>;
+      const rebuiltChunk = {
+        content: chunk.content,
+        startLine: typeof metadata.startLine === "number" ? metadata.startLine : 1,
+        endLine: typeof metadata.endLine === "number" ? metadata.endLine : 1,
+        chunkType: typeof metadata.chunkType === "string" ? metadata.chunkType : "other",
+        name: typeof metadata.name === "string" ? metadata.name : undefined,
+        language: typeof metadata.language === "string" ? metadata.language : "text",
+      };
+      const filePath = typeof metadata.filePath === "string" ? metadata.filePath : "unknown";
+      texts.push(
+        ...createEmbeddingTexts(rebuiltChunk, filePath).map((text) => ({
+          text,
+          tokenCount: estimateTokens(text),
+        }))
+      );
+    } else {
+      texts.push({
+        text: chunk.text,
+        tokenCount: estimateTokens(chunk.text),
+      });
+    }
   }
 
   if (texts.length === 0) {
@@ -2422,6 +2444,7 @@ export class Indexer {
       embeddingProvider: this.database.getMetadata("index.embeddingProvider") ?? "",
       embeddingModel: this.database.getMetadata("index.embeddingModel") ?? "",
       embeddingDimensions: parseInt(this.database.getMetadata("index.embeddingDimensions") ?? "0", 10),
+      embeddingStrategyVersion: this.database.getMetadata("index.embeddingStrategyVersion") ?? "1",
       createdAt: this.database.getMetadata("index.createdAt") ?? "",
       updatedAt: this.database.getMetadata("index.updatedAt") ?? "",
     };
@@ -2437,6 +2460,7 @@ export class Indexer {
     this.database.setMetadata("index.embeddingProvider", provider.provider);
     this.database.setMetadata("index.embeddingModel", provider.modelInfo.model);
     this.database.setMetadata("index.embeddingDimensions", provider.modelInfo.dimensions.toString());
+    this.database.setMetadata("index.embeddingStrategyVersion", EMBEDDING_STRATEGY_VERSION);
     if (this.config.scope === "global") {
       this.database.setMetadata(this.getLegacyMigrationMetadataKey(), "done");
     }
@@ -2472,6 +2496,15 @@ export class Indexer {
         compatible: false,
         code: IncompatibilityCode.MODEL_MISMATCH,
         reason: `Model mismatch: index was built with "${storedMetadata.embeddingModel}", but current model is "${currentModel}". Embeddings are incompatible. Run index_codebase with force=true to rebuild.`,
+        storedMetadata,
+      };
+    }
+
+    if (storedMetadata.embeddingStrategyVersion !== EMBEDDING_STRATEGY_VERSION) {
+      return {
+        compatible: false,
+        code: IncompatibilityCode.EMBEDDING_STRATEGY_MISMATCH,
+        reason: `Embedding strategy mismatch: index was built with embedding strategy v${storedMetadata.embeddingStrategyVersion}, but the current code requires v${EMBEDDING_STRATEGY_VERSION}. Run index_codebase with force=true to rebuild cached embeddings.`,
         storedMetadata,
       };
     }
@@ -3616,6 +3649,7 @@ export class Indexer {
         database.deleteMetadata("index.embeddingProvider");
         database.deleteMetadata("index.embeddingModel");
         database.deleteMetadata("index.embeddingDimensions");
+        database.deleteMetadata("index.embeddingStrategyVersion");
         database.deleteMetadata(this.getLegacyMigrationMetadataKey());
         database.deleteMetadata("index.createdAt");
         database.deleteMetadata("index.updatedAt");
@@ -3658,6 +3692,7 @@ export class Indexer {
     database.deleteMetadata("index.embeddingProvider");
     database.deleteMetadata("index.embeddingModel");
     database.deleteMetadata("index.embeddingDimensions");
+    database.deleteMetadata("index.embeddingStrategyVersion");
     database.deleteMetadata(this.getLegacyMigrationMetadataKey());
     database.deleteMetadata("index.createdAt");
     database.deleteMetadata("index.updatedAt");

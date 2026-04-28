@@ -127,6 +127,24 @@ describe("indexer clearIndex force rebuild", () => {
     expect(floatCount).toBe(4);
   });
 
+  it("marks older embedding strategy metadata as incompatible until force rebuild", async () => {
+    embeddingDimensions = 8;
+    const indexer = createIndexer(tempDir, 8);
+    const stats = await indexer.index();
+    expect(stats.failedChunks).toBe(0);
+
+    const dbPath = path.join(tempDir, ".opencode", "index", "codebase.db");
+    const db = new Database(dbPath);
+    db.setMetadata("index.embeddingStrategyVersion", "1");
+
+    const restartedIndexer = createIndexer(tempDir, 8);
+    const status = await restartedIndexer.getStatus();
+
+    expect(status.compatibility?.compatible).toBe(false);
+    expect(status.compatibility?.reason).toContain("Embedding strategy mismatch");
+    await expect(restartedIndexer.index()).rejects.toThrow("Run index_codebase with force=true to rebuild the index");
+  });
+
   it("rejects force clearing an inherited project index from a fresh worktree", async () => {
     const mainRepoDir = path.join(tempDir, "main-repo");
     const worktreeDir = path.join(tempDir, "worktree-feature");

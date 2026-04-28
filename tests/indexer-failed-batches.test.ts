@@ -270,4 +270,70 @@ describe("indexer failed batch recovery", () => {
     const status = await indexer.getStatus();
     expect(status.failedBatchesCount).toBe(0);
   });
+
+  it("rebuilds legacy failed-batch prompts with the current split strategy", async () => {
+    const indexer = createOllamaIndexer();
+    await indexer.initialize();
+
+    const failedBatchesPath = path.join(tempDir, ".opencode", "index", "failed-batches.json");
+    fs.mkdirSync(path.dirname(failedBatchesPath), { recursive: true });
+    fs.writeFileSync(
+      failedBatchesPath,
+      JSON.stringify([
+        {
+          chunks: [
+            {
+              id: "legacy-oversized",
+              text: "triggerFailure legacy prompt",
+              content: "triggerFailure ".repeat(900),
+              contentHash: "legacy-hash",
+              metadata: {
+                filePath: sourceFile,
+                startLine: 1,
+                endLine: 1,
+                language: "typescript",
+                chunkType: "function",
+                hash: "legacy-hash",
+                name: "legacyOversized",
+              },
+            },
+          ],
+          error: "legacy oversize failure",
+          attemptCount: 1,
+          lastAttempt: new Date().toISOString(),
+        },
+      ], null, 2),
+      "utf-8"
+    );
+
+    const embedPrompts: string[] = [];
+    fetchSpy.mockImplementation(async (url, init) => {
+      if (String(url).endsWith("/api/tags")) {
+        return new Response(JSON.stringify({
+          models: [{ name: "nomic-embed-text" }],
+        }), { status: 200 });
+      }
+
+      const body = JSON.parse(String(init?.body ?? "{}")) as { prompt?: string };
+      const prompt = body.prompt ?? "";
+      embedPrompts.push(prompt);
+
+      if (prompt.includes("triggerFailure") && !prompt.includes("Part ")) {
+        return new Response(JSON.stringify({ error: "the input length exceeds the context length" }), { status: 500 });
+      }
+
+      return new Response(JSON.stringify({
+        embedding: Array.from({ length: 768 }, () => 0.1),
+      }), { status: 200 });
+    });
+
+    const retry = await indexer.retryFailedBatches();
+
+    expect(retry.failed).toBe(0);
+    expect(retry.remaining).toBe(0);
+    expect(retry.succeeded).toBe(1);
+    expect(embedPrompts.length).toBeGreaterThan(1);
+    expect(embedPrompts.some((prompt) => prompt.includes("Part 1/"))).toBe(true);
+    expect(embedPrompts.some((prompt) => prompt.includes("Part 2/"))).toBe(true);
+  });
 });
