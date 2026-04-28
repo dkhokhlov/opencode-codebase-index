@@ -313,6 +313,7 @@ class OllamaEmbeddingProvider implements EmbeddingProviderInterface {
       body: JSON.stringify({
         model: this.modelInfo.model,
         prompt: text,
+        truncate: false,
       }),
     });
 
@@ -332,27 +333,27 @@ class OllamaEmbeddingProvider implements EmbeddingProviderInterface {
   }
 
   async embedBatch(texts: string[]): Promise<EmbeddingBatchResult> {
-    const results = await Promise.all(
-      texts.map(async (text) => {
-        try {
-          return await this.embedSingle(text);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const shouldRetryWithTruncation = message.includes("input length exceeds the context length");
+    const results: Array<{ embedding: number[]; tokensUsed: number }> = [];
 
-          if (!shouldRetryWithTruncation) {
-            throw error;
-          }
+    for (const text of texts) {
+      try {
+        results.push(await this.embedSingle(text));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const shouldRetryWithTruncation = message.includes("input length exceeds the context length");
 
-          const truncated = this.truncateToTokenLimit(text, this.modelInfo.maxTokens);
-          if (truncated === text) {
-            throw error;
-          }
-
-          return this.embedSingle(truncated);
+        if (!shouldRetryWithTruncation) {
+          throw error;
         }
-      })
-    );
+
+        const truncated = this.truncateToTokenLimit(text, this.modelInfo.maxTokens);
+        if (truncated === text) {
+          throw error;
+        }
+
+        results.push(await this.embedSingle(truncated));
+      }
+    }
 
     return {
       embeddings: results.map((r) => r.embedding),

@@ -468,10 +468,37 @@ describe("OllamaEmbeddingProvider", () => {
     const result = await provider.embedBatch([oversized]);
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    const firstBody = JSON.parse((fetchSpy.mock.calls[0] as [string, RequestInit])[1].body as string) as { prompt: string };
-    const secondBody = JSON.parse((fetchSpy.mock.calls[1] as [string, RequestInit])[1].body as string) as { prompt: string };
+    const firstBody = JSON.parse((fetchSpy.mock.calls[0] as [string, RequestInit])[1].body as string) as { prompt: string; truncate: boolean };
+    const secondBody = JSON.parse((fetchSpy.mock.calls[1] as [string, RequestInit])[1].body as string) as { prompt: string; truncate: boolean };
+    expect(firstBody.truncate).toBe(false);
+    expect(secondBody.truncate).toBe(false);
     expect(secondBody.prompt.length).toBeLessThan(firstBody.prompt.length);
     expect(result.embeddings).toHaveLength(1);
+  });
+
+  it("processes ollama embedBatch requests sequentially", async () => {
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+
+    fetchSpy.mockImplementation(async (_url, init) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { truncate?: boolean };
+      expect(body.truncate).toBe(false);
+
+      activeRequests += 1;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      activeRequests -= 1;
+      return new Response(JSON.stringify({ embedding: new Array(768).fill(0.1) }), { status: 200 });
+    });
+
+    const provider = createOllamaProvider();
+    const result = await provider.embedBatch(["first", "second", "third"]);
+
+    expect(result.embeddings).toHaveLength(3);
+    expect(maxActiveRequests).toBe(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
   it("rethrows non-context ollama errors", async () => {
