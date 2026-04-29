@@ -1769,11 +1769,25 @@ export class Indexer {
       return false;
     }
 
-    if (this.getBranchCatalogKeys().some((branchKey) => this.database!.getBranchChunkIds(branchKey).length > 0)) {
+    if (this.getBranchCatalogKeys().some((branchKey) => {
+      const branchChunkIds = this.database!.getBranchChunkIds(branchKey);
+      if (branchChunkIds.length > 0) {
+        return true;
+      }
+
+      return this.database!.getBranchSymbolIds(branchKey).length > 0;
+    })) {
       return true;
     }
 
-    const hasAnyBranchRows = this.database.getAllBranches().some((branchKey) => this.database!.getBranchChunkIds(branchKey).length > 0);
+    const hasAnyBranchRows = this.database.getAllBranches().some((branchKey) => {
+      const branchChunkIds = this.database!.getBranchChunkIds(branchKey);
+      if (branchChunkIds.length > 0) {
+        return true;
+      }
+
+      return this.database!.getBranchSymbolIds(branchKey).length > 0;
+    });
     if (hasAnyBranchRows) {
       return false;
     }

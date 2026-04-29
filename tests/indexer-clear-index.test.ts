@@ -429,6 +429,46 @@ describe("indexer clearIndex force rebuild", () => {
     expect(status.compatibility?.reason).toContain("Embedding strategy mismatch");
   });
 
+  it("detects symbol-only scoped mismatch during startup status checks", async () => {
+    vi.stubEnv("HOME", tempHome);
+
+    const projectA = path.join(tempDir, "project-a");
+    const projectAFile = path.join(projectA, "src", "a.ts");
+    fs.mkdirSync(path.dirname(projectAFile), { recursive: true });
+    fs.writeFileSync(projectAFile, "export function alpha() { return 'a'; }\n", "utf-8");
+
+    await createIndexer(projectA, 8, "global").index();
+
+    const dbPath = path.join(tempHome, ".opencode", "global-index", "codebase.db");
+    const db = new Database(dbPath);
+    const projectHash = hashContent(path.resolve(projectA)).slice(0, 16);
+    const branchKey = `${projectHash}:default`;
+    const projectSymbol = `sym_${hashContent(`${projectAFile}:alpha:function:1`).slice(0, 16)}`;
+
+    db.setMetadata("index.embeddingStrategyVersion", "1");
+    db.deleteMetadata(`index.embeddingStrategyVersion.${projectHash}`);
+    db.clearBranch(branchKey);
+    db.deleteBranchSymbolsForBranch(branchKey, [projectSymbol]);
+    db.deleteChunksByFile(projectAFile);
+    db.addSymbolsToBranchBatch(branchKey, [projectSymbol]);
+
+    fs.rmSync(path.join(tempHome, ".opencode", "global-index", "vectors.usearch"), { force: true });
+    fs.rmSync(path.join(tempHome, ".opencode", "global-index", "vectors"), { recursive: true, force: true });
+    fs.writeFileSync(
+      path.join(tempHome, ".opencode", "global-index", "file-hashes.json"),
+      JSON.stringify({}, null, 2),
+      "utf-8"
+    );
+
+    expect(db.getBranchChunkIds(branchKey)).toHaveLength(0);
+    expect(db.getBranchSymbolIds(branchKey)).toContain(projectSymbol);
+
+    const status = await createIndexer(projectA, 8, "global").getStatus();
+
+    expect(status.compatibility?.compatible).toBe(false);
+    expect(status.compatibility?.reason).toContain("Embedding strategy mismatch");
+  });
+
   it("re-embeds shared knowledge-base chunks after a global embedding strategy reset", async () => {
     vi.stubEnv("HOME", tempHome);
 
