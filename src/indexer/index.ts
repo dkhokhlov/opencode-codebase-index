@@ -2011,9 +2011,9 @@ export class Indexer {
       return false;
     }
 
-    const currentBranchKeys = new Set(this.getBranchCatalogKeys());
+    const projectHash = hashContent(path.resolve(this.projectRoot)).slice(0, 16);
     return this.database.getAllBranches().some(
-      (branchKey) => !currentBranchKeys.has(branchKey) && (
+      (branchKey) => !branchKey.startsWith(`${projectHash}:`) && (
         this.database!.getBranchChunkIds(branchKey).length > 0 ||
         this.database!.getBranchSymbolIds(branchKey).length > 0
       )

@@ -1040,6 +1040,41 @@ describe("indexer clearIndex force rebuild", () => {
     expect(db.getMetadata(`index.forceReembed.${projectAHash}`)).toBe("true");
   });
 
+  it("allows incompatible global reset when only same-project non-current branches have data", async () => {
+    vi.stubEnv("HOME", tempHome);
+
+    const projectA = path.join(tempDir, "project-a");
+    const projectAFile = path.join(projectA, "src", "a.ts");
+    fs.mkdirSync(path.join(projectA, ".git", "refs", "heads", "feature"), { recursive: true });
+    fs.mkdirSync(path.dirname(projectAFile), { recursive: true });
+    fs.writeFileSync(path.join(projectA, ".git", "HEAD"), "ref: refs/heads/default\n");
+    fs.writeFileSync(path.join(projectA, ".git", "refs", "heads", "default"), "1111111111111111111111111111111111111111\n");
+    fs.writeFileSync(path.join(projectA, ".git", "refs", "heads", "feature", "test"), "2222222222222222222222222222222222222222\n");
+    fs.writeFileSync(projectAFile, "export function alpha() { return 'a'; }\n", "utf-8");
+
+    embeddingDimensions = 8;
+    await createIndexer(projectA, 8, "global").index();
+
+    const dbPath = path.join(tempHome, ".opencode", "global-index", "codebase.db");
+    const db = new Database(dbPath);
+    const projectAHash = hashContent(path.resolve(projectA)).slice(0, 16);
+    const defaultBranch = `${projectAHash}:default`;
+    const featureBranch = `${projectAHash}:feature/test`;
+    const projectAChunk = db.getChunksByFile(projectAFile)[0];
+
+    db.addChunksToBranchBatch(featureBranch, [projectAChunk.chunkId]);
+    expect(db.chunkExistsOnBranch(defaultBranch, projectAChunk.chunkId)).toBe(true);
+    expect(db.chunkExistsOnBranch(featureBranch, projectAChunk.chunkId)).toBe(true);
+
+    embeddingDimensions = 4;
+    const incompatibleIndexer = createIndexer(projectA, 4, "global");
+    await expect(incompatibleIndexer.clearIndex()).resolves.toBeUndefined();
+
+    expect(db.chunkExistsOnBranch(defaultBranch, projectAChunk.chunkId)).toBe(false);
+    expect(db.chunkExistsOnBranch(featureBranch, projectAChunk.chunkId)).toBe(false);
+    expect(db.getMetadata(`index.forceReembed.${projectAHash}`)).toBeNull();
+  });
+
   it("clears DB-only legacy branch rows for deleted same-project branches during strategy reset", async () => {
     vi.stubEnv("HOME", tempHome);
 
