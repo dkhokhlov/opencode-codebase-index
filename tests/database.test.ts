@@ -18,6 +18,43 @@ describe("Database", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  describe("close semantics", () => {
+    it("should allow repeated close calls", () => {
+      expect(() => db.close()).not.toThrow();
+      expect(() => db.close()).not.toThrow();
+    });
+
+    it("should fail fast after close", () => {
+      db.close();
+
+      expect(() => db.getStats()).toThrow("Database is closed");
+      expect(() => db.embeddingExists("hash123")).toThrow("Database is closed");
+      expect(() => db.setMetadata("key", "value")).toThrow("Database is closed");
+    });
+
+    it("should fail fast for wrapper no-op batch helpers after close", () => {
+      db.close();
+
+      expect(() => db.upsertEmbeddingsBatch([])).toThrow("Database is closed");
+      expect(() => db.upsertChunksBatch([])).toThrow("Database is closed");
+      expect(() => db.addChunksToBranchBatch("main", [])).toThrow("Database is closed");
+      expect(() => db.getReferencedChunkIds([])).toThrow("Database is closed");
+      expect(() => db.clearCallEdgeTargetsForSymbols([])).toThrow("Database is closed");
+    });
+
+    it("should release the database file when closed", () => {
+      const dbPath = path.join(tempDir, "test.db");
+
+      db.close();
+
+      if (process.platform !== "win32") {
+        return;
+      }
+
+      expect(() => fs.rmSync(dbPath, { force: true })).not.toThrow();
+    });
+  });
+
   describe("embeddings", () => {
     it("should check if embedding exists", () => {
       expect(db.embeddingExists("hash123")).toBe(false);
