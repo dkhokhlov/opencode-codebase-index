@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, promises as fsPromises } from "fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, promises as fsPromises } from "fs";
 import * as path from "path";
 import { performance } from "perf_hooks";
 import PQueue from "p-queue";
@@ -1834,6 +1834,7 @@ export class Indexer {
 
   private atomicWriteSync(targetPath: string, data: string): void {
     const tempPath = `${targetPath}.tmp`;
+    mkdirSync(path.dirname(targetPath), { recursive: true });
     writeFileSync(tempPath, data);
     renameSync(tempPath, targetPath);
   }
