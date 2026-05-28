@@ -43,7 +43,7 @@
 
 1. **Install the plugin**
    ```bash
-   npm install opencode-codebase-index
+   npm install @dkhokhlov/opencode-codebase-index
    ```
 
 2. **Add to `opencode.json`**
@@ -88,7 +88,7 @@ Use the same semantic search from any MCP-compatible client. Index once, search 
 
 1. **Install dependencies**
    ```bash
-   npm install opencode-codebase-index @modelcontextprotocol/sdk zod
+   npm install @dkhokhlov/opencode-codebase-index @modelcontextprotocol/sdk zod
    ```
 
 2. **Configure your MCP client**

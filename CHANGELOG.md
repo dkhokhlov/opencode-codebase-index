@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-05-28
+
+### Changed
+- **Rebased fork release**: Republished on top of upstream `main` (including post-`v0.8.1` config/eval fixes) with the rebased MATLAB indexing and call-graph commits. Replaces the pre-rebase `0.10.0` tarball.
+
+## [0.10.0] - 2026-05-28
+
 ### Added
 - **MATLAB call graph support**: Added query-based call extraction for MATLAB direct function calls and dotted method/package calls, enabled `.m` files in the `call_graph` indexing path, and documented the MATLAB indexing/function-call ambiguity in tests.
+
+### Changed
+- **Scoped npm package metadata**: Updated package metadata and install documentation to publish as `@dkhokhlov/opencode-codebase-index`.
+
+## [0.9.0] - 2026-05-28
+
+### Added
+- **MATLAB language support**: Added tree-sitter-based semantic parsing, file discovery, and semantic chunk extraction for MATLAB `.m` files, including function and class definitions with `%` comment attachment.
+
+### Changed
+- **MATLAB file inclusion defaults**: Added `**/*.m` to the built-in include globs and normalized merged config handling so built-in patterns are not duplicated when users also set them in `additionalInclude`.
 
 ## [0.8.1] - 2026-05-22
 
