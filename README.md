@@ -656,6 +656,15 @@ String values in `codebase-index.json` can reference environment variables with 
 | `logBranch` | `true` | Log branch detection and switches |
 | `metrics` | `false` | Enable metrics collection (indexing stats, search timing, cache performance) |
 
+### Recovery warnings in debug logs
+
+When debug logging is enabled, the indexer now emits warn-level recovery messages if persisted cache state cannot be read safely.
+
+- Corrupted or unreadable `file-hashes.json` causes the in-memory file hash cache to be reset.
+- Corrupted or unreadable `failed-batches.json` causes persisted retry batches to be skipped for that run.
+
+These warnings improve observability but do **not** change the recovery behavior: the indexer still falls back to a safe reset/skip path instead of crashing. If these warnings recur, remove the affected file under `.opencode/index/` (or the global index directory) and rebuild with `/index force`.
+
 ### Retrieval ranking behavior
 
 - `codebase_search` and `codebase_peek` use the hybrid path: semantic + keyword retrieval → fusion (`fusionStrategy`) → deterministic rerank (`rerankTopN`) → optional external reranker (`reranker`) → filtering.
