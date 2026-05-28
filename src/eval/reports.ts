@@ -18,13 +18,22 @@ import type {
 } from "./types.js";
 
 export function loadSummary(summaryPath: string, options?: LoadSummaryOptions): EvalSummary {
-  const raw = readFileSync(summaryPath, "utf-8");
-
   try {
-    return validateSummary(JSON.parse(raw) as EvalSummary, summaryPath, options);
+    const raw = readFileSync(summaryPath, "utf-8");
+    const parsed = JSON.parse(raw) as EvalSummary;
+    return validateSummary(parsed, summaryPath, options);
   } catch (error: unknown) {
+    if (error instanceof SyntaxError) {
+      const message = error.message;
+      throw new Error(`Failed to parse eval summary JSON at ${summaryPath}: ${message}`);
+    }
+
+    if (error instanceof Error) {
+      throw error;
+    }
+
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to parse eval summary JSON at ${summaryPath}: ${message}`);
+    throw new Error(`Failed to load eval summary at ${summaryPath}: ${message}`);
   }
 }
 

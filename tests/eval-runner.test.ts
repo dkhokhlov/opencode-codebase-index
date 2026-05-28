@@ -567,6 +567,61 @@ describe("eval runner", () => {
     ).rejects.toThrow(new RegExp(`Failed to parse eval summary JSON at ${brokenBaselinePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   });
 
+  it("preserves summary validation errors for valid JSON baselines", async () => {
+    const invalidBaselinePath = path.join(tempDir, "benchmarks", "baselines", "invalid-summary.json");
+    writeFileSync(
+      invalidBaselinePath,
+      JSON.stringify(
+        {
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          datasetName: "small",
+          datasetVersion: "1.0.0",
+          queryCount: 1,
+          searchConfig: {
+            fusionStrategy: "rrf",
+            hybridWeight: 0.5,
+            rrfK: 60,
+            rerankTopN: 20,
+          },
+          metrics: {
+            hitAt1: "bad",
+            hitAt3: 1,
+            hitAt5: 1,
+            hitAt10: 1,
+            mrrAt10: 1,
+            ndcgAt10: 1,
+            distinctTop3Ratio: 1,
+            rawDistinctTop3Ratio: 1,
+            latencyMs: { p50: 1, p95: 1, p99: 1 },
+            embedding: { callCount: 1, estimatedCostUsd: 0 },
+            tokenEstimate: { embeddingTokensUsed: 1 },
+            failureBuckets: {
+              "wrong-file": 0,
+              "wrong-symbol": 0,
+              "docs-tests-outranking-source": 0,
+              "no-relevant-hit-top-k": 0,
+            },
+          },
+          perQuery: [],
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    await expect(
+      runEvaluation({
+        projectRoot: tempDir,
+        datasetPath: "benchmarks/golden/small.json",
+        outputRoot: "benchmarks/results",
+        againstPath: path.relative(tempDir, invalidBaselinePath),
+        ciMode: false,
+        reindex: false,
+      })
+    ).rejects.toThrow(new RegExp(`${invalidBaselinePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.metrics\\.hitAt1 must be a finite number`));
+  });
+
   it("rematerializes the local eval config when repeated reindex runs use different explicit config paths", async () => {
     const mainRepoDir = path.join(tempDir, "main-repo");
     const worktreeDir = path.join(tempDir, "worktree-feature");
