@@ -1813,13 +1813,20 @@ export class Indexer {
   }
 
   private loadFileHashCache(): void {
+    if (!existsSync(this.fileHashCachePath)) {
+      return;
+    }
+
     try {
-      if (existsSync(this.fileHashCachePath)) {
-        const data = readFileSync(this.fileHashCachePath, "utf-8");
-        const parsed = JSON.parse(data);
-        this.fileHashCache = new Map(Object.entries(parsed));
-      }
-    } catch {
+      const data = readFileSync(this.fileHashCachePath, "utf-8");
+      const parsed = JSON.parse(data);
+      this.fileHashCache = new Map(Object.entries(parsed));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn("Failed to load file hash cache, resetting cache state", {
+        fileHashCachePath: this.fileHashCachePath,
+        error: message,
+      });
       this.fileHashCache = new Map();
     }
   }
@@ -2296,7 +2303,12 @@ export class Indexer {
       return this.loadSerializedFailedBatches()
         .map((batch) => normalizeFailedBatch(batch, maxChunkTokens))
         .filter((batch): batch is FailedBatch => batch !== null);
-    } catch {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn("Failed to load failed batch state, skipping persisted retries", {
+        failedBatchesPath: this.failedBatchesPath,
+        error: message,
+      });
       return [];
     }
   }
