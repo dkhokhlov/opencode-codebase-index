@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **MATLAB call graph support**: Added query-based call extraction for MATLAB direct function calls and dotted method/package calls, enabled `.m` files in the `call_graph` indexing path, and documented the MATLAB indexing/function-call ambiguity in tests.
+
 ## [0.8.1] - 2026-05-22
 
 ### Changed
