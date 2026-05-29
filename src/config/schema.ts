@@ -215,7 +215,6 @@ export function parseConfig(raw: unknown): ParsedCodebaseIndexConfig {
     ? rawAdditionalInclude
       .filter(p => typeof p === "string" && p.trim().length > 0)
       .map(p => p.trim())
-      .filter(p => !DEFAULT_INCLUDE.includes(p))
     : [];
 
   let embeddingProvider: EmbeddingProvider | 'custom' | 'auto';

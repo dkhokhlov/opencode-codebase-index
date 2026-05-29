@@ -4,7 +4,6 @@ export const DEFAULT_INCLUDE = [
   "**/*.{go,rs,java,kt,scala}",
   "**/*.{c,cpp,cc,h,hpp}",
   "**/*.{rb,php,inc,swift}",
-  "**/*.m",
   "**/*.{cls,trigger}",
   "**/*.{vue,svelte,astro}",
   "**/*.{sql,graphql,proto}",

@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import * as os from "os";
 import * as path from "path";
 
-import { DEFAULT_INCLUDE } from "./constants.js";
 import { resolveProjectConfigPath } from "./paths.js";
 import { resolveInheritedKnowledgeBaseEntries } from "./rebase.js";
 
@@ -222,8 +221,7 @@ export function loadMergedConfig(projectRoot: string): unknown {
   const globalAdditional = globalConfig && Array.isArray(globalConfig.additionalInclude) ? globalConfig.additionalInclude : [];
   const projectAdditional = projectConfig && Array.isArray(projectConfig.additionalInclude) ? projectConfig.additionalInclude : [];
   const allAdditional = [...globalAdditional, ...projectAdditional];
-  merged.additionalInclude = mergeUniqueStringArray(allAdditional)
-    .filter((pattern) => !DEFAULT_INCLUDE.includes(pattern));
+  merged.additionalInclude = mergeUniqueStringArray(allAdditional);
 
   return merged;
 }

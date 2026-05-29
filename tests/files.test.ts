@@ -100,7 +100,7 @@ describe("files utilities", () => {
       ).toBe(true);
     });
 
-    it("should include MATLAB .m files by default", () => {
+    it("should NOT include MATLAB .m files by default (opt-in required)", () => {
       const filter = createIgnoreFilter(tempDir);
 
       expect(
@@ -108,6 +108,20 @@ describe("files utilities", () => {
           path.join(tempDir, "src", "calculateSignal.m"),
           tempDir,
           DEFAULT_INCLUDE,
+          DEFAULT_EXCLUDE,
+          filter
+        )
+      ).toBe(false);
+    });
+
+    it("should include MATLAB .m files when opted in via additionalInclude", () => {
+      const filter = createIgnoreFilter(tempDir);
+
+      expect(
+        shouldIncludeFile(
+          path.join(tempDir, "src", "calculateSignal.m"),
+          tempDir,
+          [...DEFAULT_INCLUDE, "**/*.m"],
           DEFAULT_EXCLUDE,
           filter
         )

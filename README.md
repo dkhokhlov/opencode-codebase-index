@@ -211,7 +211,9 @@ graph TD
 
 1. **Parsing**: We use `tree-sitter` to intelligently parse your code into meaningful blocks (functions, classes, interfaces). JSDoc comments and docstrings are automatically included with their associated code.
 
-**Supported Languages (Tree-sitter semantic parsing)**: TypeScript, JavaScript, Python, Rust, Go, Java, C#, Ruby, PHP, Apex, Bash, C, C++, JSON, TOML, YAML, Zig, MATLAB
+**Supported Languages (Tree-sitter semantic parsing)**: TypeScript, JavaScript, Python, Rust, Go, Java, C#, Ruby, PHP, Apex, Bash, C, C++, JSON, TOML, YAML, Zig, MATLAB†
+
+† MATLAB (`.m`) is opt-in — see below.
 
 **Additional Supported Formats (line-based chunking)**: TXT, HTML, HTM, Markdown, Shell scripts
 
@@ -227,6 +229,11 @@ graph TD
 ```
 
 Use `include` to replace defaults, or `additionalInclude` to extend (e.g. `"**/*.pdf"`, `"**/*.csv"`).
+
+†**MATLAB opt-in**: `.m` is excluded from defaults because it conflicts with the Objective-C extension used on Apple codebases. To enable MATLAB discovery, add to your global config (`~/.config/opencode/codebase-index.json`):
+```json
+{ "additionalInclude": ["**/*.m"] }
+```
 
 **Max File Size**: Default 1MB (1048576 bytes). Configure via `indexing.maxFileSize` (bytes).
 2. **Chunking**: Large blocks are split with overlapping windows to preserve context across chunk boundaries.
